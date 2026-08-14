@@ -1,0 +1,333 @@
+from datetime import datetime
+
+
+class GrowthDAO:
+    def __init__(self, db_manager):
+        self._db = db_manager
+
+    def _now_str(self) -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    # ─── growth periods ────────────────────────────────────
+
+    async def get_current_period(self):
+        return await self._db.fetchone(
+            "SELECT * FROM growth_periods WHERE is_current=1 LIMIT 1"
+        )
+
+    async def get_current_period_conn(self, conn):
+        async with conn.execute(
+            "SELECT * FROM growth_periods WHERE is_current=1 LIMIT 1"
+        ) as cur:
+            return await cur.fetchone()
+
+    async def create_period(self, period_no: int, name: str) -> None:
+        await self._db.execute(
+            "INSERT INTO growth_periods (period_no, name, is_current) VALUES (?, ?, 1)",
+            (period_no, name),
+        )
+
+    async def close_period(self, period_no: int) -> None:
+        await self._db.execute(
+            "UPDATE growth_periods SET is_current=0, "
+            "ended_at=datetime('now','localtime') WHERE period_no=?",
+            (period_no,),
+        )
+
+    async def close_period_conn(self, conn, period_no: int) -> None:
+        await conn.execute(
+            "UPDATE growth_periods SET is_current=0, "
+            "ended_at=datetime('now','localtime') WHERE period_no=?",
+            (period_no,),
+        )
+
+    async def max_period_no(self) -> int:
+        row = await self._db.fetchone(
+            "SELECT COALESCE(MAX(period_no), 0) AS m FROM growth_periods"
+        )
+        return int(row["m"]) if row else 0
+
+    async def max_period_no_conn(self, conn) -> int:
+        async with conn.execute(
+            "SELECT COALESCE(MAX(period_no), 0) AS m FROM growth_periods"
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row["m"]) if row else 0
+
+    async def create_period_conn(self, conn, period_no: int, name: str) -> None:
+        await conn.execute(
+            "INSERT INTO growth_periods (period_no, name, is_current) VALUES (?, ?, 1)",
+            (period_no, name),
+        )
+
+    async def list_periods(self) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM growth_periods ORDER BY period_no DESC"
+        )
+
+    # ─── players ───────────────────────────────────────────
+
+    async def upsert_player(
+        self, conn, player_uid: str, name: str, team: str, created_by: str
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO players (player_uid, name, team, created_by) "
+            "VALUES (?, ?, ?, ?) "
+            "ON CONFLICT(player_uid) DO UPDATE SET "
+            "name=excluded.name, team=excluded.team, active=1, "
+            "created_by=excluded.created_by, "
+            "updated_at=datetime('now','localtime')",
+            (player_uid, name, team, created_by),
+        )
+
+    async def get_player(self, player_uid: str):
+        return await self._db.fetchone(
+            "SELECT * FROM players WHERE player_uid=?", (player_uid,)
+        )
+
+    async def get_player_conn(self, conn, player_uid: str):
+        async with conn.execute(
+            "SELECT * FROM players WHERE player_uid=?", (player_uid,)
+        ) as cur:
+            return await cur.fetchone()
+
+    async def update_player_progress(
+        self, conn, player_uid: str, level: int, xp: int, xp_total: int
+    ) -> None:
+        await conn.execute(
+            "UPDATE players SET level=?, xp=?, xp_total=?, "
+            "updated_at=datetime('now','localtime') WHERE player_uid=?",
+            (level, xp, xp_total, player_uid),
+        )
+
+    async def count_players(self) -> int:
+        row = await self._db.fetchone(
+            "SELECT COUNT(*) AS c FROM players WHERE active=1"
+        )
+        return int(row["c"]) if row else 0
+
+    async def list_players(self, page: int, page_size: int) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM players WHERE active=1 ORDER BY player_uid LIMIT ? OFFSET ?",
+            (page_size, (page - 1) * page_size),
+        )
+
+    async def list_players_by_xp(self, page: int, page_size: int) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM players WHERE active=1 ORDER BY xp DESC, xp_total DESC, player_uid "
+            "LIMIT ? OFFSET ?",
+            (page_size, (page - 1) * page_size),
+        )
+
+    async def list_players_by_total(self, page: int, page_size: int) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM players WHERE active=1 ORDER BY xp_total DESC, xp DESC, player_uid "
+            "LIMIT ? OFFSET ?",
+            (page_size, (page - 1) * page_size),
+        )
+
+    async def iter_active_players(self, conn) -> list:
+        async with conn.execute(
+            "SELECT player_uid, level, xp, xp_total FROM players WHERE active=1"
+        ) as cur:
+            return await cur.fetchall()
+
+    # ─── matches / appearances / stats ─────────────────────
+
+    async def get_match(self, conn, match_date: str, opponent: str):
+        async with conn.execute(
+            "SELECT * FROM matches WHERE match_date=? AND opponent=?", (match_date, opponent)
+        ) as cur:
+            return await cur.fetchone()
+
+    async def create_match(self, conn, match_date: str, opponent: str, created_by: str) -> int:
+        cur = await conn.execute(
+            "INSERT INTO matches (match_date, opponent, created_by) VALUES (?, ?, ?)",
+            (match_date, opponent, created_by),
+        )
+        return cur.lastrowid
+
+    async def get_appearance(self, conn, match_id: int, player_uid: str):
+        async with conn.execute(
+            "SELECT * FROM appearances WHERE match_id=? AND player_uid=?",
+            (match_id, player_uid),
+        ) as cur:
+            return await cur.fetchone()
+
+    async def upsert_appearance(
+        self,
+        conn,
+        match_id: int,
+        player_uid: str,
+        period_no: int,
+        stat_xp: int,
+        bonus_xp: int,
+        total_xp: int,
+        created_by: str,
+    ) -> int:
+        await conn.execute(
+            "INSERT INTO appearances (match_id, player_uid, period_no, stat_xp, "
+            "bonus_xp, total_xp, created_by) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(match_id, player_uid) DO UPDATE SET "
+            # 覆盖已有记录时保留原 period_no，防止跨成长期覆盖旧比赛篡改历史统计
+            "period_no=appearances.period_no, stat_xp=excluded.stat_xp, "
+            "bonus_xp=excluded.bonus_xp, total_xp=excluded.total_xp, "
+            "created_by=excluded.created_by, "
+            "created_at=datetime('now','localtime')",
+            (match_id, player_uid, period_no, stat_xp, bonus_xp, total_xp, created_by),
+        )
+        async with conn.execute(
+            "SELECT id FROM appearances WHERE match_id=? AND player_uid=?",
+            (match_id, player_uid),
+        ) as cur:
+            row = await cur.fetchone()
+        return int(row["id"])
+
+    async def delete_appearance_stats(self, conn, appearance_id: int) -> None:
+        await conn.execute("DELETE FROM match_stats WHERE appearance_id=?", (appearance_id,))
+
+    async def insert_match_stat(
+        self, conn, appearance_id: int, stat_key: str, value: float
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO match_stats (appearance_id, stat_key, value) VALUES (?, ?, ?)",
+            (appearance_id, stat_key, value),
+        )
+
+    async def list_player_appearances(self, player_uid: str, limit: int = 20) -> list:
+        return await self._db.fetchall(
+            "SELECT a.*, m.match_date, m.opponent FROM appearances a "
+            "JOIN matches m ON m.id=a.match_id "
+            "WHERE a.player_uid=? ORDER BY m.match_date DESC, a.id DESC LIMIT ?",
+            (player_uid, limit),
+        )
+
+    async def list_appearance_stats(self, conn, appearance_id: int) -> list:
+        async with conn.execute(
+            "SELECT * FROM match_stats WHERE appearance_id=?", (appearance_id,)
+        ) as cur:
+            return await cur.fetchall()
+
+    # ─── milestone awards ──────────────────────────────────
+
+    async def get_award(
+        self, conn, player_uid: str, period: str, stat_key: str, threshold: float, period_no: int
+    ):
+        async with conn.execute(
+            "SELECT * FROM milestone_awards WHERE player_uid=? AND period=? AND "
+            "stat_key=? AND threshold=? AND period_no=?",
+            (player_uid, period, stat_key, threshold, period_no),
+        ) as cur:
+            return await cur.fetchone()
+
+    async def insert_award(
+        self,
+        conn,
+        player_uid: str,
+        period_no: int,
+        period: str,
+        stat_key: str,
+        threshold: float,
+        xp: int,
+        match_id: int,
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO milestone_awards (player_uid, period_no, period, stat_key, "
+            "threshold, xp, match_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (player_uid, period_no, period, stat_key, threshold, xp, match_id),
+        )
+
+    async def sum_stat_value(self, conn, player_uid: str, stat_key: str, period_no: int | None) -> float:
+        """数据值累计：period_no 为 None 表示生涯累计，否则限定成长期。"""
+        if period_no is None:
+            sql = (
+                "SELECT COALESCE(SUM(s.value), 0) AS v FROM match_stats s "
+                "JOIN appearances a ON a.id=s.appearance_id WHERE a.player_uid=? AND s.stat_key=?"
+            )
+            params = (player_uid, stat_key)
+        else:
+            sql = (
+                "SELECT COALESCE(SUM(s.value), 0) AS v FROM match_stats s "
+                "JOIN appearances a ON a.id=s.appearance_id "
+                "WHERE a.player_uid=? AND a.period_no=? AND s.stat_key=?"
+            )
+            params = (player_uid, period_no, stat_key)
+        async with conn.execute(sql, params) as cur:
+            row = await cur.fetchone()
+        return float(row["v"]) if row else 0.0
+
+    async def list_awards(self, player_uid: str) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM milestone_awards WHERE player_uid=? ORDER BY awarded_at DESC, id DESC",
+            (player_uid,),
+        )
+
+    # ─── growth rules ──────────────────────────────────────
+
+    async def save_rule(self, label: str, payload_json: str, imported_by: str) -> None:
+        await self._db.execute(
+            "INSERT INTO growth_rules (label, payload_json, imported_by) VALUES (?, ?, ?)",
+            (label, payload_json, imported_by),
+        )
+
+    async def get_latest_rule(self):
+        return await self._db.fetchone(
+            "SELECT * FROM growth_rules ORDER BY id DESC LIMIT 1"
+        )
+
+    async def list_rules(self, limit: int = 10) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM growth_rules ORDER BY id DESC LIMIT ?", (limit,)
+        )
+
+    # ─── pending imports ───────────────────────────────────
+
+    async def insert_pending(self, kind: str, file_name: str, preview: str, created_by: str) -> int:
+        cur = await self._db.execute(
+            "INSERT INTO pending_imports (kind, file_name, preview, created_by) "
+            "VALUES (?, ?, ?, ?)",
+            (kind, file_name, preview, created_by),
+        )
+        try:
+            return cur.lastrowid
+        finally:
+            await cur.close()
+
+    async def get_pending(self, pending_id: int):
+        return await self._db.fetchone(
+            "SELECT * FROM pending_imports WHERE id=?", (pending_id,)
+        )
+
+    async def get_pending_by_filename(self, file_name: str):
+        return await self._db.fetchone(
+            "SELECT * FROM pending_imports WHERE file_name=? AND status='pending' "
+            "ORDER BY id DESC LIMIT 1",
+            (file_name,),
+        )
+
+    async def list_pending(self, limit: int = 20) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM pending_imports WHERE status='pending' ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+
+    async def update_pending_status(self, pending_id: int, status: str) -> None:
+        await self._db.execute(
+            "UPDATE pending_imports SET status=? WHERE id=?", (status, pending_id)
+        )
+
+    # ─── plugin config ─────────────────────────────────────
+
+    async def get_config(self, key: str) -> str | None:
+        row = await self._db.fetchone(
+            "SELECT value FROM plugin_config WHERE key=?", (key,)
+        )
+        return row["value"] if row else None
+
+    async def set_config(self, key: str, value: str) -> None:
+        await self._db.execute(
+            "INSERT INTO plugin_config (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, "
+            "updated_at=datetime('now','localtime')",
+            (key, value),
+        )

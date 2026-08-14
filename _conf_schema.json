@@ -1,0 +1,128 @@
+{
+  "group_whitelist": {
+    "description": "群白名单",
+    "hint": "允许使用本插件的群 ID 列表（JSON 数组或逗号分隔），为空表示所有群可用。",
+    "type": "list",
+    "default": []
+  },
+  "admin_ids": {
+    "description": "管理员QQ列表",
+    "hint": "视为插件管理员的 QQ 列表（JSON 数组或逗号分隔）；群管理/群主自动视为管理员，此列表用于补充。",
+    "type": "list",
+    "default": []
+  },
+  "default_level_xp": {
+    "description": "默认每级所需经验",
+    "hint": "规则文件未提供 level_xp 时使用的每级固定经验值。",
+    "type": "int",
+    "default": 100
+  },
+  "advance_default_carryover": {
+    "description": "推进默认选项",
+    "hint": "推进成长期时未显式指定保留/清零时采用的默认策略：true=保留溢出经验结转下期，false=清零。",
+    "type": "bool",
+    "default": true
+  },
+  "rank_page_size": {
+    "description": "排行每页条数",
+    "hint": "/成长排行 每页显示的球员数量。",
+    "type": "int",
+    "default": 10
+  },
+  "import_col_type": {
+    "description": "规则表类型列位",
+    "hint": "CSV/Excel 规则表中行类型所在列（1 起，0 表示无此列），取值 stat/milestone/level。",
+    "type": "int",
+    "default": 1
+  },
+  "import_col_stat": {
+    "description": "规则表数据项列位",
+    "hint": "CSV/Excel 规则表中数据项键所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 2
+  },
+  "import_col_name": {
+    "description": "规则表显示名列位",
+    "hint": "CSV/Excel 规则表中数据项显示名所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 3
+  },
+  "import_col_xp": {
+    "description": "规则表经验列位",
+    "hint": "CSV/Excel 规则表中单位经验/奖励经验所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 4
+  },
+  "import_col_period": {
+    "description": "规则表时期列位",
+    "hint": "CSV/Excel 规则表中里程碑时期（period/career）所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 5
+  },
+  "import_col_threshold": {
+    "description": "规则表阈值列位",
+    "hint": "CSV/Excel 规则表中里程碑阈值所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 6
+  },
+  "import_col_uid": {
+    "description": "球员ID列位",
+    "hint": "球员库导入文件中球员 ID 所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 1
+  },
+  "import_col_name_player": {
+    "description": "球员姓名列位",
+    "hint": "球员库导入文件中球员姓名所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 2
+  },
+  "import_col_team": {
+    "description": "球员球队列位",
+    "hint": "球员库导入文件中球队所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 3
+  },
+  "import_col_match_date": {
+    "description": "比赛表日期列位",
+    "hint": "比赛数据导入文件中比赛日期所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 1
+  },
+  "import_col_match_uid": {
+    "description": "比赛表球员ID列位",
+    "hint": "比赛数据导入文件中球员 ID 所在列（1 起，0 表示无此列）。",
+    "type": "int",
+    "default": 2
+  },
+  "import_require_confirm": {
+    "description": "导入需确认",
+    "hint": "目录导入是否需要二次确认；群内发送文件的导入始终需要确认。",
+    "type": "bool",
+    "default": true
+  },
+  "import_max_rows": {
+    "description": "单文件最大行数",
+    "hint": "单次导入允许的最大数据行数。",
+    "type": "int",
+    "default": 50000
+  },
+  "import_batch_size": {
+    "description": "导入分批行数",
+    "hint": "导入事务每批写入的行数，越小越降低锁占用时间。",
+    "type": "int",
+    "default": 5000
+  },
+  "import_max_file_size_mb": {
+    "description": "导入文件大小上限",
+    "hint": "允许导入的文件最大体积（MB）。",
+    "type": "int",
+    "default": 50
+  },
+  "import_max_files": {
+    "description": "导入目录文件上限",
+    "hint": "imports 目录最多保留的文件数，超限自动删除最旧文件。",
+    "type": "int",
+    "default": 50
+  }
+}
