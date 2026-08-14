@@ -116,7 +116,9 @@ class GrowthImportService:
         safe = sanitize_filename(file_name)
         p = self.imports_dir / safe
         if not p.is_file() or p.parent.resolve() != self.imports_dir.resolve():
-            raise FileNotFoundError(f"文件「{file_name}」不存在于导入目录")
+            raise FileNotFoundError(
+                f"文件「{file_name}」不存在于导入目录。请先在群内发送该文件，或检查文件名"
+            )
         ext = p.suffix.lower()
         if kind == "rule":
             if ext not in _RULE_EXTS:

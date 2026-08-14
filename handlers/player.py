@@ -4,6 +4,8 @@ from collections.abc import AsyncGenerator
 
 from astrbot.api.event import AstrMessageEvent, MessageEventResult
 
+from ..utils.messages import build_help, usage
+
 
 class PlayerHandler:
     def __init__(self, plugin):
@@ -21,29 +23,16 @@ class PlayerHandler:
     def import_service(self):
         return self._plugin.import_service
 
-    async def help(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
-        yield event.plain_result(
-            "【成长系统】\n"
-            "· /成长：帮助\n"
-            "· /成长规则：查看当前规则\n"
-            "· /成长查询 <球员ID>：球员成长档案\n"
-            "· /成长排行 [页]：当期经验排行\n"
-            "· /成长排行 生涯 [页]：生涯经验排行\n"
-            "· /成长球员 [页]：球员名单\n"
-            "· /成长期状态：当前成长期信息\n\n"
-            "管理命令：\n"
-            "· /成长上报 <球员ID> <日期> <数据项=值>...\n"
-            "· /成长推进 <新名称> [保留|清零]\n"
-            "· /成长导入文件 <文件名> [类型]\n"
-            "· /成长确认导入 <文件名> [类型]\n"
-            "· /成长导入列表\n\n"
-            "群内发送 规则_*.json/csv/xlsx、球员_*.csv/xlsx、比赛_*.csv/xlsx 文件可自动识别并预览导入。"
-        )
+    async def help(self, event: AstrMessageEvent, is_admin: bool = False) -> AsyncGenerator[MessageEventResult, None]:
+        yield event.plain_result(build_help(is_admin))
 
     async def show_rule(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         rule = await self.growth.get_rule()
         if rule is None:
-            yield event.plain_result("尚未导入成长规则。请管理员群内发送 规则_*.json/csv/xlsx 文件导入。")
+            yield event.plain_result(
+                "尚未导入成长规则。请管理员在群内发送 规则_*.json/csv/xlsx 文件，"
+                "或使用 /成长导入文件 <文件名> 预览后确认导入。"
+            )
             return
         from ..services import rule_parser
 
@@ -52,12 +41,12 @@ class PlayerHandler:
     async def query_player(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         parts = event.get_message_str().split()
         if len(parts) < 2:
-            yield event.plain_result("用法: /成长查询 <球员ID>")
+            yield event.plain_result(usage("成长查询", "<球员ID>", "/成长查询 p01"))
             return
         player_uid = parts[1].strip()
         profile = await self.growth.get_profile(player_uid)
         if profile is None:
-            yield event.plain_result(f"球员不存在: {player_uid}")
+            yield event.plain_result(f"未找到球员 {player_uid}，可用 /成长球员 查看球员名单。")
             return
         p = profile["player"]
         lines = [
@@ -97,7 +86,7 @@ class PlayerHandler:
         page_size = self.growth._page_size()
         title = "【成长排行·生涯】" if mode == "career" else "【成长排行·本期】"
         if not rows:
-            yield event.plain_result(f"{title}\n暂无球员数据。")
+            yield event.plain_result(f"{title}\n暂无球员数据，请管理员导入球员库后查看。")
             return
         lines = [f"{title}（第 {result['page']}/{result['total_pages']} 页）"]
         for i, p in enumerate(rows, start=(result["page"] - 1) * page_size + 1):
@@ -138,14 +127,3 @@ class PlayerHandler:
             for p in st["periods"][1:5]:
                 lines.append(f"· #{p['period_no']} {p['name']}（{p['started_at']} ~ {p['ended_at'] or '进行中'}）")
         yield event.plain_result("\n".join(lines))
-
-    async def import_list(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
-        pending = await self.dao.list_pending()
-        if not pending:
-            yield event.plain_result("暂无待确认的导入。")
-            return
-        lines = ["【待确认导入】"]
-        kind_name = {"rule": "规则", "players": "球员", "matches": "比赛"}
-        for p in pending:
-            lines.append(f"· {p['id']}. [{kind_name.get(p['kind'], p['kind'])}] {p['file_name']}")
-        yield event.plain_result("\n".join(lines) + "\n回复 /成长确认导入 <文件名> [类型] 执行")

@@ -19,6 +19,7 @@ from astrbot_plugin_whleague_growth_system.services.rule_parser import (
     parse_rule_json,
     parse_rule_table,
 )
+from astrbot_plugin_whleague_growth_system.utils.messages import build_help, deny, usage
 from astrbot_plugin_whleague_growth_system.utils.security import (
     parse_date,
     parse_num,
@@ -157,6 +158,41 @@ def test_validate_and_cast():
         validate_and_cast("default_level_xp", "0")
     assert validate_and_cast("advance_default_carryover", "false") is False
     assert validate_and_cast("group_whitelist", "111,222") == ["111", "222"]
+
+
+# ─── 统一反馈文案（utils/messages）─────────────────────────
+
+def test_usage_format():
+    assert usage("成长查询", "<球员ID>") == "用法: /成长查询 <球员ID>"
+    assert usage("成长上报", "<球员ID> <日期> <数据项=值>...", "/成长上报 p01 2026-08-14 进球=2") == (
+        "用法: /成长上报 <球员ID> <日期> <数据项=值>...\n例: /成长上报 p01 2026-08-14 进球=2"
+    )
+
+
+def test_deny_hints_admin_ids():
+    assert deny().startswith("该命令需要管理员权限。")
+    assert "admin_ids" in deny()
+
+
+def test_build_help_requires_admin():
+    player_text = build_help(False)
+    assert "管理命令：" not in player_text
+    assert "/成长上报" not in player_text
+    assert "/成长规则" in player_text
+    admin_text = build_help(True)
+    assert "管理命令：" in admin_text
+    assert "/成长设置" in admin_text
+    assert "/成长查看配置" in admin_text
+
+
+def test_error_hints_in_service_messages():
+    # 服务层报错原文带修正引导
+    with pytest.raises(ValueError) as e:
+        parse_date("14/08/2026")
+    assert "例: 2026-08-14" in str(e.value)
+    with pytest.raises(ValueError) as e:
+        parse_num("abc")
+    assert "需为非负数字" in str(e.value)
 
 
 # ─── 集成：经验 / 里程碑 / 推进（内存 SQLite）──────────────

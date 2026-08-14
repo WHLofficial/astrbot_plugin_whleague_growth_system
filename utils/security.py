@@ -47,7 +47,7 @@ def parse_num(raw) -> float:
     """解析非负数值（整数或小数），用于比赛数据值。"""
     s = str(raw).strip()
     if not re.match(r"^\d+(\.\d+)?$", s):
-        raise ValueError(f"非法数值: {raw}")
+        raise ValueError(f"非法数值: {raw}（需为非负数字，如 2 或 1.5）")
     return float(s)
 
 
@@ -63,7 +63,7 @@ def parse_date(raw: str) -> str:
     if not m:
         m = re.fullmatch(r"(\d{4})(\d{2})(\d{2})", s)
     if not m:
-        raise ValueError(f"日期需为 YYYY-MM-DD 形式: {raw}")
+        raise ValueError(f"日期需为 YYYY-MM-DD 形式: {raw}（例: 2026-08-14）")
     y, mo, d = int(m.group(1)), int(m.group(2)), int(m.group(3))
     try:
         date(y, mo, d)

@@ -7,6 +7,7 @@ from astrbot.api.event import AstrMessageEvent, MessageEventResult
 
 from ..config.defaults import validate_and_cast
 from ..services import rule_parser
+from ..utils.messages import WARN, deny, usage
 from ..utils.security import parse_date, parse_num
 
 _KIND_ALIAS = {
@@ -62,7 +63,20 @@ class AdminHandler:
         return qq in [str(a) for a in admins]
 
     async def _deny(self, event) -> None:
-        yield event.plain_result("该命令需要管理员权限。")
+        yield event.plain_result(deny())
+
+    # ─── 待确认导入列表 ────────────────────────────────────
+
+    async def import_list(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
+        pending = await self.dao.list_pending()
+        if not pending:
+            yield event.plain_result("暂无待确认的导入。")
+            return
+        lines = ["【待确认导入】"]
+        kind_name = {"rule": "规则", "players": "球员", "matches": "比赛"}
+        for p in pending:
+            lines.append(f"· {p['id']}. [{kind_name.get(p['kind'], p['kind'])}] {p['file_name']}")
+        yield event.plain_result("\n".join(lines) + "\n回复 /成长确认导入 <文件名> [类型] 执行")
 
     # ─── 比赛上报 ──────────────────────────────────────────
 
@@ -74,15 +88,14 @@ class AdminHandler:
         parts = event.get_message_str().split()
         if len(parts) < 4:
             yield event.plain_result(
-                "用法: /成长上报 <球员ID> <日期> <数据项=值>...\n"
-                "例: /成长上报 p01 2026-08-14 进球=2 助攻=1"
+                usage("成长上报", "<球员ID> <日期> <数据项=值>...", "/成长上报 p01 2026-08-14 进球=2 助攻=1")
             )
             return
         player_uid = parts[1].strip()
         try:
             match_date = parse_date(parts[2])
         except ValueError as e:
-            yield event.plain_result(f"日期错误: {e}")
+            yield event.plain_result(f"{WARN}日期错误: {e}")
             return
         stats = {}
         opponent = ""
@@ -99,7 +112,7 @@ class AdminHandler:
             try:
                 stats[k] = parse_num(v)
             except ValueError as e:
-                yield event.plain_result(str(e))
+                yield event.plain_result(f"{WARN}{e}")
                 return
         if not stats:
             yield event.plain_result("请至少提供一项数据，如 进球=2")
@@ -109,11 +122,11 @@ class AdminHandler:
                 player_uid, match_date, opponent, stats, event.get_sender_id()
             )
         except ValueError as e:
-            yield event.plain_result(str(e))
+            yield event.plain_result(f"{WARN}{e}")
             return
         except Exception as e:
             logger.error(f"Growth record error: {e}")
-            yield event.plain_result(f"录入失败: {e}")
+            yield event.plain_result(f"{WARN}录入失败: {e}")
             return
         lines = [
             f"✅ 已录入 {result['name']}({result['player_uid']}) {result['match_date']}"
@@ -144,7 +157,7 @@ class AdminHandler:
             return
         parts = event.get_message_str().split()
         if len(parts) < 2:
-            yield event.plain_result("用法: /成长推进 <新名称> [保留|清零]")
+            yield event.plain_result(usage("成长推进", "<新名称> [保留|清零]", "/成长推进 第二期 保留"))
             return
         new_name = parts[1].strip()
         default_carry = _as_bool(
@@ -163,7 +176,7 @@ class AdminHandler:
         try:
             result = await self.growth.advance_period(new_name, carryover)
         except ValueError as e:
-            yield event.plain_result(str(e))
+            yield event.plain_result(f"{WARN}{e}")
             return
         lines = [
             f"✅ 成长期推进完成",
@@ -187,7 +200,7 @@ class AdminHandler:
             return
         parts = event.get_message_str().split()
         if len(parts) < 2:
-            yield event.plain_result("用法: /成长导入文件 <文件名> [类型]\n类型: 规则 / 球员 / 比赛")
+            yield event.plain_result(usage("成长导入文件", "<文件名> [类型]", "/成长导入文件 规则_a.json"))
             return
         file_name = parts[1].strip()
         kind = self._resolve_kind(parts[2].strip() if len(parts) >= 3 else None, file_name)
@@ -198,11 +211,11 @@ class AdminHandler:
             file_path = self.import_service.check_file(file_name, kind)
             preview = await self.import_service.preview(file_path, kind)
         except (ValueError, FileNotFoundError, rule_parser.RuleError) as e:
-            yield event.plain_result(str(e))
+            yield event.plain_result(f"{WARN}{e}")
             return
         except Exception as e:
             logger.error(f"Import preview error: {e}")
-            yield event.plain_result(f"预览失败: {e}")
+            yield event.plain_result(f"{WARN}预览失败: {e}")
             return
         await self.dao.insert_pending(kind, file_name, preview, event.get_sender_id())
         yield event.plain_result(
@@ -216,7 +229,7 @@ class AdminHandler:
             return
         parts = event.get_message_str().split()
         if len(parts) < 2:
-            yield event.plain_result("用法: /成长确认导入 <文件名> [类型]")
+            yield event.plain_result(usage("成长确认导入", "<文件名> [类型]", "/成长确认导入 规则_a.json"))
             return
         file_name = parts[1].strip()
         kind = self._resolve_kind(parts[2].strip() if len(parts) >= 3 else None, file_name)
@@ -250,11 +263,11 @@ class AdminHandler:
                 yield event.plain_result(f"未知导入类型: {kind}")
                 return
         except (ValueError, FileNotFoundError, rule_parser.RuleError) as e:
-            yield event.plain_result(str(e))
+            yield event.plain_result(f"{WARN}{e}")
             return
         except Exception as e:
             logger.error(f"Import confirm error: {e}")
-            yield event.plain_result(f"导入失败: {e}")
+            yield event.plain_result(f"{WARN}导入失败: {e}")
             return
         if pending is not None:
             await self.dao.update_pending_status(pending["id"], "done")
@@ -274,13 +287,13 @@ class AdminHandler:
             return
         parts = event.get_message_str().split(maxsplit=2)
         if len(parts) < 3:
-            yield event.plain_result("用法: /成长设置 <键> <值>")
+            yield event.plain_result(usage("成长设置", "<键> <值>", "/成长设置 rank_page_size 20"))
             return
         key, raw = parts[1].strip(), parts[2].strip()
         try:
             value = validate_and_cast(key, raw)
         except ValueError as e:
-            yield event.plain_result(str(e))
+            yield event.plain_result(f"{WARN}{e}")
             return
         await self._plugin._persist_config(key, value)
         yield event.plain_result(f"✅ 配置已更新: {key} = {value}")

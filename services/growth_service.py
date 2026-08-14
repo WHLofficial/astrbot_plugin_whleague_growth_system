@@ -64,7 +64,9 @@ class GrowthService:
 
         unknown = [k for k in stats if k not in rule["stats"]]
         if unknown:
-            raise ValueError(f"数据项未在规则中定义: {', '.join(unknown)}")
+            raise ValueError(
+                f"数据项未在规则中定义: {', '.join(unknown)}（可用 /成长规则 查看）"
+            )
 
         period = await self._dao.get_current_period()
         period_no = period["period_no"] if period else 1
@@ -89,7 +91,7 @@ class GrowthService:
     ) -> dict:
         player = await self._dao.get_player_conn(conn, player_uid)
         if player is None or not player["active"]:
-            raise ValueError(f"球员不存在或已停用: {player_uid}")
+            raise ValueError(f"球员不存在或已停用: {player_uid}（可用 /成长球员 查看名单）")
 
         match = await self._dao.get_match(conn, match_date, opponent)
         if match is None:

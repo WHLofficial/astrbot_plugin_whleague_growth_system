@@ -82,7 +82,8 @@ class GrowthSystemPlugin(Star):
     async def cmd_help(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
-        async for r in self.player_handler.help(event):
+        is_admin = await self.admin_handler._is_admin(event)
+        async for r in self.player_handler.help(event, is_admin):
             yield r
 
     @filter.command("成长规则")
@@ -124,7 +125,11 @@ class GrowthSystemPlugin(Star):
     async def cmd_import_list(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
-        async for r in self.player_handler.import_list(event):
+        if not await self.admin_handler._is_admin(event):
+            async for r in self.admin_handler._deny(event):
+                yield r
+            return
+        async for r in self.admin_handler.import_list(event):
             yield r
 
     # ═══════════════════════════════════════════════════════
