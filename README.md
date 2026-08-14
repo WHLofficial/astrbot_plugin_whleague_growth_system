@@ -1,14 +1,138 @@
-# astrbot-plugin-helloworld
+# 成长系统 for WHL（astrbot_plugin_whleague_growth_system）
 
-AstrBot 插件模板 / A template plugin for AstrBot plugin feature
+球员成长系统：按**可导入的规则**（JSON / CSV / Excel）将每场比赛的多项数据换算为**成长经验**，支持**成长期里程碑奖励**、**等级成长**与**成长期推进**。
 
-> [!NOTE]
-> This repo is just a template of [AstrBot](https://github.com/AstrBotDevs/AstrBot) Plugin.
-> 
-> [AstrBot](https://github.com/AstrBotDevs/AstrBot) is an agentic assistant for both personal and group conversations. It can be deployed across dozens of mainstream instant messaging platforms, including QQ, Telegram, Feishu, DingTalk, Slack, LINE, Discord, Matrix, etc. In addition, it provides a reliable and extensible conversational AI infrastructure for individuals, developers, and teams. Whether you need a personal AI companion, an intelligent customer support agent, an automation assistant, or an enterprise knowledge base, AstrBot enables you to quickly build AI applications directly within your existing messaging workflows.
+## 快速上手
 
-# Supports
+1. **导入规则**：群内发送 `规则_*.json / .csv / .xlsx` 文件 → 自动识别并预览 → 回复 `/成长确认导入 规则_*.json` 生效。
+2. **导入球员库**：群内发送 `球员_*.csv / .xlsx`（球员ID / 姓名 / 球队，列位可在设置面板调整）→ 预览 → `/成长确认导入 球员_*.csv`。
+3. **录入比赛**：命令 `/成长上报 <球员ID> <日期> <数据项=值>...`，或群内发送 `比赛_*.csv / .xlsx` 批量导入。
+4. **查看成长**：`/成长查询 <球员ID>`、`/成长排行`、`/成长期状态`。
+5. **推进成长期**（管理员）：`/成长推进 <新名称> [保留|清零]`。
 
-- [AstrBot Repo](https://github.com/AstrBotDevs/AstrBot)
-- [AstrBot Plugin Development Docs (Chinese)](https://docs.astrbot.app/dev/star/plugin-new.html)
-- [AstrBot Plugin Development Docs (English)](https://docs.astrbot.app/en/dev/star/plugin-new.html)
+## 规则文件格式
+
+规则定义了三件事：**数据项 → 每单位经验**、**里程碑奖励**、**每级所需经验**。
+
+### JSON（`规则_xxx.json`）
+
+```json
+{
+  "stats": {
+    "goal": { "name": "进球", "xp": 10 },
+    "assist": { "name": "助攻", "xp": 5 },
+    "appearance": { "name": "出场", "xp": 2 }
+  },
+  "milestones": [
+    { "stat": "goal", "period": "period", "threshold": 10, "xp": 50 },
+    { "stat": "goal", "period": "career", "threshold": 100, "xp": 1000 }
+  ],
+  "level_xp": 100
+}
+```
+
+- `stats`：数据项键 → 显示名 + 每单位经验（1 个进球 = 10 经验）。简写 `"goal": 10` 等价。
+- `milestones`：数据项在 `period`（当前成长期内数据值累计）或 `career`（生涯数据值累计）达到阈值时，一次性奖励经验；每个球员每个里程碑**只颁发一次**。
+- `level_xp`：每级所需固定经验（默认 100，可在配置修改默认值）。
+
+### CSV / Excel（`规则_xxx.csv`）
+
+带类型列（第 1 列 type，可改列位）：
+
+| type | stat | name | xp | period | threshold |
+|------|------|------|:--:|:--:|:--:|
+| stat | goal | 进球 | 10 | | |
+| stat | assist | 助攻 | 5 | | |
+| milestone | goal | | 50 | period | 10 |
+| milestone | goal | | 1000 | career | 100 |
+| level | | | 100 | | |
+
+无类型列（首列直接是数据项键，其余列位整体左移一列）：
+
+| stat | name | xp | period | threshold |
+|------|------|:--:|:--:|:--:|
+| goal | 进球 | 10 | | |
+| milestone | goal | 50 | period | 10 |
+| level | | 100 | | |
+
+> 规则导入即整体替换旧规则；**历史录入的经验按录入当时的规则冻结**，改规则不影响旧数据。
+
+## 球员库文件（`球员_*.csv / .xlsx`）
+
+| 球员ID | 姓名 | 球队 |
+|:--:|:--:|:--:|
+| p01 | 张三 | A队 |
+| p02 | 李四 | B队 |
+
+列位默认 1/2/3，可在设置面板调整；重复导入同一球员 ID 会更新信息并保持其成长数据。
+
+## 比赛数据文件（`比赛_*.csv / .xlsx`）
+
+| 日期 | 球员ID | 进球 | 助攻 |
+|:--:|:--:|:--:|:--:|
+| 2026-08-14 | p01 | 2 | 1 |
+| 2026-08-14 | p02 | 1 | 0 |
+
+- 日期列与球员 ID 列位可在设置面板调整；其余列**按表头与规则数据项键匹配**。
+- 同日期同球员重复上报会**覆盖**该场数据（经验按新值重算）。
+
+## 命令一览
+
+### 玩家（只读）
+
+| 命令 | 说明 |
+|------|------|
+| `/成长` | 帮助 |
+| `/成长规则` | 查看当前生效规则 |
+| `/成长查询 <球员ID>` | 球员成长档案（等级/经验/里程碑/最近比赛） |
+| `/成长排行 [页]` | 当期经验排行 |
+| `/成长排行 生涯 [页]` | 生涯经验排行 |
+| `/成长球员 [页]` | 球员名单 |
+| `/成长期状态` | 当前成长期信息 |
+| `/成长导入列表` | 待确认导入 |
+
+### 管理（群管理 + 配置管理员）
+
+| 命令 | 说明 |
+|------|------|
+| `/成长上报 <球员ID> <日期> <数据项=值>...` | 录入/覆盖一场比赛数据（可加 对手=xxx） |
+| `/成长推进 <新名称> [保留\|清零]` | 推进成长期：等级折算（逐级消耗、只升不降），溢出经验保留结转或清零 |
+| `/成长导入文件 <文件名> [类型]` | 导入 imports 目录内已有文件 |
+| `/成长确认导入 <文件名> [类型]` | 确认并执行待导入文件 |
+| `/成长设置 <键> <值>` | 修改运行配置 |
+| `/成长查看配置` | 查看配置 |
+
+## 成长期推进规则
+
+推进成长期时，对每位球员结算：
+
+```
+可升级数 = 当期经验 ÷ 每级所需经验（向下取整）
+等级 += 可升级数（只升不降）
+溢出经验 = 当期经验 % 每级所需经验
+```
+
+- **保留**：溢出经验结转，作为新成长期初始经验（默认，可在配置改为清零）
+- **清零**：溢出经验清零，仅保留等级
+
+生涯累计经验（`xp_total`）与生涯里程碑不受推进影响；成长期内里程碑在新成长期重新累计。
+
+## 配置（`_conf_schema.json`，AstrBot 设置面板）
+
+- `group_whitelist`：群白名单（空=全部群可用）
+- `admin_ids`：补充管理员 QQ 列表（群管理/群主自动视为管理员）
+- `default_level_xp`：规则文件未提供 level_xp 时的默认每级经验
+- `advance_default_carryover`：推进时未显式指定时的默认策略（true=保留）
+- 规则表 / 球员表 / 比赛表的列位配置（`import_col_*`）
+- 导入安全参数（`import_max_*`：行数/分批/文件大小/文件数）
+
+## 开发与测试
+
+```bash
+# 运行单元测试（自动使用 astrbot 桩，无需运行 AstrBot）
+python -m pytest tests/ -v
+```
+
+数据库位置：`<AstrBot根目录>/data/plugin_data/astrbot_plugin_whleague_growth_system/growth_system.db`（SQLite，WAL 模式）。
+
+> 路径说明：插件数据统一存放于 AstrBot 的 `data/plugin_data/<插件名>/` 目录（注意是单数 `plugin_data`），AstrBot 根目录默认为启动时的工作目录，可用环境变量 `ASTRBOT_ROOT` 覆盖。导入的规则/球员/比赛文件位于该目录下的 `imports/` 子目录。
