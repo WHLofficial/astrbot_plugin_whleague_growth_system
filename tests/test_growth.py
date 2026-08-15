@@ -15,6 +15,7 @@ from astrbot_plugin_whleague_growth_system.services.growth_service import Growth
 from astrbot_plugin_whleague_growth_system.services.import_service import GrowthImportService, kind_from_name
 from astrbot_plugin_whleague_growth_system.services.rule_parser import (
     RuleError,
+    format_rule,
     normalize_rule,
     parse_rule_json,
     parse_rule_table,
@@ -78,6 +79,270 @@ def test_parse_rule_json_invalid():
     bad2["milestones"] = [{"stat": "goal", "period": "yearly", "threshold": 1, "xp": 1}]
     with pytest.raises(RuleError):
         parse_rule_json(json.dumps(bad2), 100)
+
+
+# ─── bands（区间经验）─────────────────────────────────────
+
+def _bands_rule():
+    return {
+        "stats": {
+            "goal": {"name": "进球", "xp": 10},
+            "rating": {
+                "name": "评分",
+                "bands": [
+                    {"min": 4.0, "max": 6.0, "xp": 5},
+                    {"min": 6.0, "max": 8.0, "xp": 10},
+                    {"min": 8.0, "xp": 20},
+                ],
+            },
+        },
+        "milestones": [],
+        "level_xp": 100,
+    }
+
+
+def test_parse_rule_json_bands_ok():
+    rule = parse_rule_json(json.dumps(_bands_rule()), 100)
+    bands = rule["stats"]["rating"]["bands"]
+    assert bands == [
+        {"min": 4.0, "max": 6.0, "xp": 5},
+        {"min": 6.0, "max": 8.0, "xp": 10},
+        {"min": 8.0, "xp": 20},
+    ]
+    assert "xp" not in rule["stats"]["rating"]
+
+
+def test_parse_rule_json_bands_invalid():
+    base = _bands_rule()
+    # 重叠
+    bad = json.loads(json.dumps(base))
+    bad["stats"]["rating"]["bands"] = [
+        {"min": 4.0, "max": 8.0, "xp": 5},
+        {"min": 6.0, "max": 8.0, "xp": 10},
+    ]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    # 开放上界非末段
+    bad = json.loads(json.dumps(base))
+    bad["stats"]["rating"]["bands"] = [
+        {"min": 4.0, "xp": 5},
+        {"min": 6.0, "max": 8.0, "xp": 10},
+    ]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    # 下限为负
+    bad = json.loads(json.dumps(base))
+    bad["stats"]["rating"]["bands"] = [{"min": -1, "max": 6.0, "xp": 5}]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    # xp 与 bands 并存
+    bad = json.loads(json.dumps(base))
+    bad["stats"]["rating"]["xp"] = 10
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    # max <= min
+    bad = json.loads(json.dumps(base))
+    bad["stats"]["rating"]["bands"] = [{"min": 6.0, "max": 4.0, "xp": 5}]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+
+
+def test_bands_cannot_be_milestone_stat():
+    base = _bands_rule()
+    bad = json.loads(json.dumps(base))
+    bad["milestones"] = [{"stat": "rating", "period": "period", "threshold": 50, "xp": 100}]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    bad2 = json.loads(json.dumps(base))
+    bad2["milestones"] = [{"stat": "rating", "period": "period", "step": 10, "xp": 100}]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad2), 100)
+
+
+def test_bands_xp_calculation():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            rule = parse_rule_json(json.dumps(_bands_rule()), 100)
+            await service.save_rule(rule, "bands", "admin")
+
+            async def _tx(conn):
+                await dao.upsert_player(conn, "p01", "球员一", "A队", "admin")
+
+            await service._db.execute_transaction(_tx)
+            # 5.0 → [4,6) 得 5；线性项不受影响
+            r = await service.record_match("p01", "2026-08-01", "", {"rating": 5.0, "goal": 1}, "admin")
+            assert r["stat_xp"] == 5 + 10
+            # 7.5 → [6,8) 得 10
+            r = await service.record_match("p01", "2026-08-02", "", {"rating": 7.5}, "admin")
+            assert r["stat_xp"] == 10
+            # 9.0 / 10.0 / 11.0 → [8,∞) 开放段得 20
+            r = await service.record_match("p01", "2026-08-03", "", {"rating": 9.0}, "admin")
+            assert r["stat_xp"] == 20
+            r = await service.record_match("p01", "2026-08-03b", "", {"rating": 10.0}, "admin")
+            assert r["stat_xp"] == 20
+            # 未命中（低于首段下限 3.5）得 0，不报错
+            r = await service.record_match("p01", "2026-08-04", "", {"rating": 3.5}, "admin")
+            assert r["stat_xp"] == 0
+            # 边界值：4.0 命中首段，6.0 命中次段（左闭右开）
+            r = await service.record_match("p01", "2026-08-06", "", {"rating": 4.0}, "admin")
+            assert r["stat_xp"] == 5
+            r = await service.record_match("p01", "2026-08-07", "", {"rating": 6.0}, "admin")
+            assert r["stat_xp"] == 10
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+# ─── repeat（每累计 n 次奖励，可重复）─────────────────────
+
+def _repeat_rule():
+    return {
+        "stats": {
+            "appearance": {"name": "出场", "xp": 2},
+            "goal": {"name": "进球", "xp": 10},
+        },
+        "milestones": [
+            {"stat": "appearance", "period": "period", "step": 10, "xp": 50},
+        ],
+        "level_xp": 100,
+    }
+
+
+def test_parse_rule_json_repeat():
+    rule = parse_rule_json(json.dumps(_repeat_rule()), 100)
+    assert rule["milestones"] == [
+        {"stat": "appearance", "period": "period", "step": 10, "xp": 50}
+    ]
+    # step 与 threshold 并存报错
+    bad = json.loads(json.dumps(_repeat_rule()))
+    bad["milestones"] = [
+        {"stat": "appearance", "period": "period", "step": 10, "threshold": 5, "xp": 50}
+    ]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    # step 非正报错
+    bad = json.loads(json.dumps(_repeat_rule()))
+    bad["milestones"] = [{"stat": "appearance", "period": "period", "step": 0, "xp": 50}]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+
+
+def test_repeat_rewards_multiple_times():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            rule = parse_rule_json(json.dumps(_repeat_rule()), 100)
+            await service.save_rule(rule, "repeat", "admin")
+
+            async def _tx(conn):
+                await dao.upsert_player(conn, "p01", "球员一", "A队", "admin")
+
+            await service._db.execute_transaction(_tx)
+            # 每场 5 次出场（数据经验 10/场）
+            r1 = await service.record_match("p01", "2026-08-01", "", {"appearance": 5}, "admin")
+            assert r1["bonus_xp"] == 0
+            # 累计 10 → 触发一次重复奖励 +50
+            r2 = await service.record_match("p01", "2026-08-08", "", {"appearance": 5}, "admin")
+            assert r2["bonus_xp"] == 50
+            assert len(r2["awarded"]) == 1 and r2["awarded"][0]["count"] == 1
+            p = await dao.get_player("p01")
+            assert p["xp"] == 10 + 10 + 50
+            # 再 5 次 → 累计 15，仍只有 1 档
+            r3 = await service.record_match("p01", "2026-08-15", "", {"appearance": 5}, "admin")
+            assert r3["bonus_xp"] == 0
+            p = await dao.get_player("p01")
+            assert p["xp"] == 20 + 50 + 10
+            # 再 5 次 → 累计 20 → 第二档 +50
+            r4 = await service.record_match("p01", "2026-08-22", "", {"appearance": 5}, "admin")
+            assert r4["bonus_xp"] == 50
+            assert r4["awarded"][0]["count"] == 1
+            p = await dao.get_player("p01")
+            assert p["xp"] == 30 + 100 + 10
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_repeat_resets_on_period_advance():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            rule = parse_rule_json(json.dumps(_repeat_rule()), 100)
+            await service.save_rule(rule, "repeat", "admin")
+
+            async def _tx(conn):
+                await dao.upsert_player(conn, "p01", "球员一", "A队", "admin")
+
+            await service._db.execute_transaction(_tx)
+            await service.record_match("p01", "2026-08-01", "", {"appearance": 10}, "admin")
+            assert (await dao.get_player("p01"))["xp"] == 20 + 50
+            # 推进成长期后重新累计
+            await service.advance_period("成长期2", True)
+            r = await service.record_match("p01", "2026-09-01", "", {"appearance": 10}, "admin")
+            assert r["bonus_xp"] == 50, "新成长期应重新触发"
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+# ─── 表格解析：band / repeat 行 ───────────────────────────
+
+def test_parse_rule_table_band_and_repeat():
+    rows = [
+        ["type", "stat", "name", "xp", "period", "threshold", "min", "max"],
+        ["stat", "goal", "进球", "10", "", "", "", ""],
+        ["stat", "appearance", "出场", "2", "", "", "", ""],
+        ["band", "rating", "评分", "5", "", "", "4.0", "6.0"],
+        ["band", "rating", "", "10", "", "", "6.0", "8.0"],
+        ["band", "rating", "", "20", "", "", "8.0", ""],
+        ["repeat", "appearance", "", "50", "period", "10", "", ""],
+        ["level", "", "", "100", "", "", "", ""],
+    ]
+    rule = parse_rule_table(rows, DEFAULT_CONFIG, 100)
+    assert rule["stats"]["goal"] == {"name": "进球", "xp": 10}
+    assert rule["stats"]["rating"]["name"] == "评分"
+    assert rule["stats"]["rating"]["bands"] == [
+        {"min": 4.0, "max": 6.0, "xp": 5},
+        {"min": 6.0, "max": 8.0, "xp": 10},
+        {"min": 8.0, "xp": 20},
+    ]
+    assert rule["milestones"] == [
+        {"stat": "appearance", "period": "period", "step": 10, "xp": 50}
+    ]
+    assert rule["level_xp"] == 100
+
+
+def test_parse_rule_table_linear_band_conflict():
+    rows = [
+        ["type", "stat", "name", "xp", "period", "threshold", "min", "max"],
+        ["stat", "rating", "评分", "10", "", "", "", ""],
+        ["band", "rating", "", "5", "", "", "4.0", "6.0"],
+    ]
+    with pytest.raises(RuleError):
+        parse_rule_table(rows, DEFAULT_CONFIG, 100)
+
+
+def test_parse_rule_table_band_no_type_col():
+    # 无类型列布局（列位左移一列）：stat/name/xp/period/threshold/min/max
+    rows = [
+        ["goal", "进球", 10],
+        ["rating", "评分", 5, "", "", 4.0, 6.0],
+        ["rating", "", 10, "", "", 6.0, 8.0],
+    ]
+    rule = parse_rule_table(rows, DEFAULT_CONFIG, 100)
+    assert rule["stats"]["goal"]["xp"] == 10
+    assert rule["stats"]["rating"]["bands"][0] == {"min": 4.0, "max": 6.0, "xp": 5}
+
+
+def test_format_rule_bands_and_repeat():
+    rule = parse_rule_json(json.dumps(_bands_rule()), 100)
+    text = format_rule(rule)
+    assert "评分" in text and "[4~6)+5" in text and "[8~)+20" in text
+    assert "未命中区间得 0" in text
+    rule2 = parse_rule_json(json.dumps(_repeat_rule()), 100)
+    text2 = format_rule(rule2)
+    assert "每累计 10 次 → 奖励 50 经验（可重复）" in text2
 
 
 def test_parse_rule_table_csv():
@@ -158,6 +423,152 @@ def test_validate_and_cast():
         validate_and_cast("default_level_xp", "0")
     assert validate_and_cast("advance_default_carryover", "false") is False
     assert validate_and_cast("group_whitelist", "111,222") == ["111", "222"]
+
+
+# ─── 经验值支持最多 1 位小数 ──────────────────────────────
+
+def _decimal_rule():
+    return {
+        "stats": {
+            "goal": {"name": "进球", "xp": 2.5},
+            "rating": {
+                "name": "评分",
+                "bands": [{"min": 4.0, "max": 6.0, "xp": 1.5}, {"min": 6.0, "xp": 3.5}],
+            },
+        },
+        "milestones": [
+            {"stat": "goal", "period": "period", "threshold": 10, "xp": 12.5},
+            {"stat": "goal", "period": "period", "step": 5, "xp": 7.5},
+        ],
+        "level_xp": 12.5,
+    }
+
+
+def test_parse_decimal_xp():
+    rule = parse_rule_json(json.dumps(_decimal_rule()), 100)
+    assert rule["stats"]["goal"]["xp"] == 2.5
+    assert rule["stats"]["rating"]["bands"][0]["xp"] == 1.5
+    assert rule["milestones"][0]["xp"] == 12.5
+    assert rule["milestones"][1]["xp"] == 7.5
+    assert rule["level_xp"] == 12.5
+    # 2 位小数报错
+    bad = json.loads(json.dumps(_decimal_rule()))
+    bad["stats"]["goal"]["xp"] = 0.25
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    # 非正报错
+    bad = json.loads(json.dumps(_decimal_rule()))
+    bad["stats"]["goal"]["xp"] = 0
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    # step 仍要求整数
+    bad = json.loads(json.dumps(_decimal_rule()))
+    bad["milestones"][1]["step"] = 2.5
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+
+
+def test_decimal_xp_calculation():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            rule = parse_rule_json(json.dumps(_decimal_rule()), 100)
+            await service.save_rule(rule, "dec", "admin")
+
+            async def _tx(conn):
+                await dao.upsert_player(conn, "p01", "球员一", "A队", "admin")
+
+            await service._db.execute_transaction(_tx)
+            # 线性：3 * 2.5 = 7.5；bands：5.0 命中 [4,6) 得 1.5
+            r = await service.record_match(
+                "p01", "2026-08-01", "", {"goal": 3, "rating": 5.0}, "admin"
+            )
+            assert r["stat_xp"] == 9.0  # 7.5 + 1.5
+            p = await dao.get_player("p01")
+            assert p["xp"] == 9.0 and p["xp_total"] == 9.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_decimal_overwrite_delta():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            rule = parse_rule_json(json.dumps(_decimal_rule()), 100)
+            await service.save_rule(rule, "dec", "admin")
+
+            async def _tx(conn):
+                await dao.upsert_player(conn, "p01", "球员一", "A队", "admin")
+
+            await service._db.execute_transaction(_tx)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 3}, "admin")
+            # 覆盖为 goal=1 → 2.5，delta = 2.5 - 7.5 = -5，xp 从 7.5 回到 2.5
+            r = await service.record_match("p01", "2026-08-01", "", {"goal": 1}, "admin")
+            assert r["stat_xp"] == 2.5
+            p = await dao.get_player("p01")
+            assert p["xp"] == 2.5
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_advance_decimal_settlement():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            rule = parse_rule_json(json.dumps(_decimal_rule()), 100)
+            await service.save_rule(rule, "dec", "admin")
+
+            async def _tx(conn):
+                await dao.upsert_player(conn, "p01", "球员一", "A队", "admin")
+
+            await service._db.execute_transaction(_tx)
+            # 直接构造小数 xp，绕开录入的里程碑干扰
+            await service._db.execute(
+                "UPDATE players SET xp=25.0, xp_total=25.0 WHERE player_uid='p01'"
+            )
+            # xp=25.0, level_xp=12.5 → 升 2 级，溢出 0（整数运算精确）
+            r = await service.advance_period("成长期2", True)
+            assert r["level_xp"] == 12.5
+            p = await dao.get_player("p01")
+            assert p["level"] == 3 and p["xp"] == 0.0
+            # 带溢出：xp=12.5 → 升 1 级，溢出 0；xp=37.5 → 升 3 级溢出 0
+            await service._db.execute(
+                "UPDATE players SET xp=37.5, xp_total=62.5 WHERE player_uid='p01'"
+            )
+            await service.advance_period("成长期3", True)
+            p = await dao.get_player("p01")
+            assert p["level"] == 6 and p["xp"] == 0.0 and p["xp_total"] == 62.5
+            # 溢出结转：xp=45.0 → 升 3 级（37.5/12.5=3）溢出 7.5
+            await service._db.execute(
+                "UPDATE players SET xp=45.0, xp_total=107.5 WHERE player_uid='p01'"
+            )
+            await service.advance_period("成长期4", True)
+            p = await dao.get_player("p01")
+            assert p["level"] == 9 and p["xp"] == 7.5 and p["xp_total"] == 107.5
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_fmt_xp_display():
+    from astrbot_plugin_whleague_growth_system.utils.security import fmt_xp
+    assert fmt_xp(10.0) == "10"
+    assert fmt_xp(12.5) == "12.5"
+    assert fmt_xp(0.0) == "0"
+    assert fmt_xp(None) == "0"
+    assert fmt_xp(7.5) == "7.5"
+
+
+def test_format_rule_decimal_display():
+    rule = parse_rule_json(json.dumps(_decimal_rule()), 100)
+    text = format_rule(rule)
+    assert "每单位 2.5 经验" in text
+    assert "[4~6)+1.5" in text
+    assert "奖励 12.5 经验" in text
+    assert "每累计 5 次 → 奖励 7.5 经验（可重复）" in text
+    assert "每级所需经验：12.5" in text
 
 
 # ─── 统一反馈文案（utils/messages）─────────────────────────

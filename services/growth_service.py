@@ -15,11 +15,11 @@ class GrowthService:
         self._cfg_get = cfg_get
         """配置读取函数（self.config_cache.get），用于取默认 level_xp 与翻页大小。"""
 
-    def _default_level_xp(self) -> int:
+    def _default_level_xp(self) -> float:
         try:
-            return int(self._cfg_get("default_level_xp", 100) or 100)
+            return round(float(self._cfg_get("default_level_xp", 100) or 100), 1)
         except (TypeError, ValueError):
-            return 100
+            return 100.0
 
     def _page_size(self) -> int:
         try:
@@ -100,11 +100,21 @@ class GrowthService:
             match_id = match["id"]
 
         old = await self._dao.get_appearance(conn, match_id, player_uid)
-        old_stat_xp = int(old["stat_xp"]) if old else 0
+        old_stat_xp = round(float(old["stat_xp"]), 1) if old else 0.0
 
-        stat_xp = 0
+        stat_xp = 0.0
         for key, value in stats.items():
-            stat_xp += int(round(float(value) * rule["stats"][key]["xp"]))
+            meta = rule["stats"][key]
+            bands = meta.get("bands")
+            if bands is not None:
+                # 区间型：经验 = 命中区间的固定 xp，未命中得 0
+                for b in bands:
+                    if value >= b["min"] and ("max" not in b or value < b["max"]):
+                        stat_xp += b["xp"]
+                        break
+            else:
+                stat_xp += round(float(value) * meta["xp"], 1)
+        stat_xp = round(stat_xp, 1)
 
         appearance_id = await self._dao.upsert_appearance(
             conn, match_id, player_uid, period_no, stat_xp, 0, stat_xp, created_by
@@ -113,31 +123,50 @@ class GrowthService:
         for key, value in stats.items():
             await self._dao.insert_match_stat(conn, appearance_id, key, float(value))
 
-        # 里程碑检查（基于写入后的累计值，仅对未颁发且达标的规则颁发）
-        bonus = 0
+        # 里程碑检查（基于写入后的累计值）
+        bonus = 0.0
         awarded = []
         for m in rule["milestones"]:
             pno = period_no if m["period"] == "period" else 0
-            existing = await self._dao.get_award(
-                conn, player_uid, m["period"], m["stat"], m["threshold"], pno
-            )
-            if existing:
-                continue
             total = await self._dao.sum_stat_value(
                 conn, player_uid, m["stat"],
                 period_no if m["period"] == "period" else None,
             )
-            if total >= m["threshold"]:
-                await self._dao.insert_award(
-                    conn, player_uid, pno, m["period"], m["stat"], m["threshold"], m["xp"], match_id
+            if "step" in m:
+                # 每累计 step 次奖励一次（可重复触发）；+1e-9 防浮点下取整误差
+                target = int(total // m["step"] + 1e-9)
+                if target <= 0:
+                    continue
+                ra = await self._dao.get_repeat_award(
+                    conn, player_uid, m["period"], m["stat"], m["step"], pno
                 )
-                bonus += m["xp"]
-                awarded.append(m)
+                awarded_count = int(ra["awarded_count"]) if ra else 0
+                if target > awarded_count:
+                    gain = round((target - awarded_count) * m["xp"], 1)
+                    bonus = round(bonus + gain, 1)
+                    await self._dao.upsert_repeat_award(
+                        conn, player_uid, pno, m["period"], m["stat"],
+                        m["step"], m["xp"], target,
+                    )
+                    awarded.append({**m, "count": target - awarded_count, "gain": gain})
+            else:
+                # 一次性里程碑：仅未颁发且达标时颁发（幂等）
+                existing = await self._dao.get_award(
+                    conn, player_uid, m["period"], m["stat"], m["threshold"], pno
+                )
+                if existing:
+                    continue
+                if total >= m["threshold"]:
+                    await self._dao.insert_award(
+                        conn, player_uid, pno, m["period"], m["stat"], m["threshold"], m["xp"], match_id
+                    )
+                    bonus = round(bonus + m["xp"], 1)
+                    awarded.append(m)
 
-        delta = (stat_xp + bonus) - old_stat_xp
+        delta = round((stat_xp + bonus) - old_stat_xp, 1)
         level = int(player["level"])
-        xp = max(0, int(player["xp"]) + delta)
-        xp_total = max(0, int(player["xp_total"]) + delta)
+        xp = max(0.0, round(float(player["xp"]) + delta, 1))
+        xp_total = max(0.0, round(float(player["xp_total"]) + delta, 1))
         await self._dao.update_player_progress(conn, player_uid, level, xp, xp_total)
 
         return {
@@ -147,7 +176,7 @@ class GrowthService:
             "opponent": opponent,
             "stat_xp": stat_xp,
             "bonus_xp": bonus,
-            "total_xp": stat_xp + bonus,
+            "total_xp": round(stat_xp + bonus, 1),
             "awarded": awarded,
             "level": level,
             "xp": xp,
@@ -202,6 +231,8 @@ class GrowthService:
         level_xp = rule["level_xp"] if rule else self._default_level_xp()
         if not level_xp or level_xp <= 0:
             level_xp = self._default_level_xp()
+        # 经验与每级经验均 ≤1 位小数：放大 10 倍用整数运算，避免浮点整除/取模误差
+        lv10 = int(round(float(level_xp) * 10))
 
         async def _tx(conn):
             # 事务内重新读取并校验：必须仍是同一当前成长期，
@@ -215,18 +246,18 @@ class GrowthService:
             carried = 0
             for p in players:
                 uid = p["player_uid"]
-                xp = int(p["xp"])
-                gained = xp // level_xp
-                overflow = xp % level_xp
+                xp10 = int(round(float(p["xp"]) * 10))
+                gained = xp10 // lv10
+                overflow = (xp10 % lv10) / 10
                 new_level = int(p["level"]) + gained
                 new_xp = overflow if carryover else 0
                 await self._dao.update_player_progress(
-                    conn, uid, new_level, new_xp, int(p["xp_total"])
+                    conn, uid, new_level, new_xp, float(p["xp_total"])
                 )
                 if gained > 0:
                     upgraded += 1
                 if carryover:
-                    carried += overflow
+                    carried = round(carried + overflow, 1)
             await self._dao.close_period_conn(conn, period_no)
             next_no = (await self._dao.max_period_no_conn(conn)) + 1
             await self._dao.create_period_conn(conn, next_no, new_name)
@@ -250,10 +281,12 @@ class GrowthService:
         if player is None:
             return None
         awards = await self._dao.list_awards(player_uid)
+        repeat_awards = await self._dao.list_repeat_awards(player_uid)
         appearances = await self._dao.list_player_appearances(player_uid, limit=10)
         return {
             "player": player,
             "awards": awards,
+            "repeat_awards": repeat_awards,
             "appearances": appearances,
         }
 

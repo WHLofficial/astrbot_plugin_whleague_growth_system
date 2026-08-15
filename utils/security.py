@@ -51,6 +51,16 @@ def parse_num(raw) -> float:
     return float(s)
 
 
+def fmt_xp(v) -> str:
+    """经验值展示：整值去小数点（10.0→"10"），小数保留 1 位（12.5→"12.5"）。"""
+    if v is None:
+        return "0"
+    f = float(v)
+    if f == int(f):
+        return str(int(f))
+    return f"{f:.1f}".rstrip("0").rstrip(".")
+
+
 def parse_date(raw: str) -> str:
     """解析日期为 YYYY-MM-DD；容忍 2026-08-14 / 2026/08/14 / 20260814 形式。
 

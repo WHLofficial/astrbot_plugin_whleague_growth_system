@@ -1,6 +1,6 @@
 from astrbot.api import logger
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 SQL_CREATE_TABLES = r"""
 
@@ -18,8 +18,8 @@ CREATE TABLE IF NOT EXISTS players (
     team TEXT NOT NULL DEFAULT '',
     active INTEGER NOT NULL DEFAULT 1,
     level INTEGER NOT NULL DEFAULT 1,
-    xp INTEGER NOT NULL DEFAULT 0,
-    xp_total INTEGER NOT NULL DEFAULT 0,
+    xp REAL NOT NULL DEFAULT 0,
+    xp_total REAL NOT NULL DEFAULT 0,
     created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
@@ -42,9 +42,9 @@ CREATE TABLE IF NOT EXISTS appearances (
     match_id INTEGER NOT NULL REFERENCES matches(id),
     player_uid TEXT NOT NULL REFERENCES players(player_uid),
     period_no INTEGER NOT NULL REFERENCES growth_periods(period_no),
-    stat_xp INTEGER NOT NULL DEFAULT 0,
-    bonus_xp INTEGER NOT NULL DEFAULT 0,
-    total_xp INTEGER NOT NULL DEFAULT 0,
+    stat_xp REAL NOT NULL DEFAULT 0,
+    bonus_xp REAL NOT NULL DEFAULT 0,
+    total_xp REAL NOT NULL DEFAULT 0,
     created_by TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(match_id, player_uid)
@@ -68,13 +68,28 @@ CREATE TABLE IF NOT EXISTS milestone_awards (
     period TEXT NOT NULL,
     stat_key TEXT NOT NULL,
     threshold REAL NOT NULL,
-    xp INTEGER NOT NULL DEFAULT 0,
+    xp REAL NOT NULL DEFAULT 0,
     match_id INTEGER NOT NULL REFERENCES matches(id),
     awarded_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
     UNIQUE(player_uid, period, stat_key, threshold, period_no)
 );
 
 CREATE INDEX IF NOT EXISTS idx_awards_player ON milestone_awards(player_uid);
+
+CREATE TABLE IF NOT EXISTS repeat_awards (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_uid TEXT NOT NULL REFERENCES players(player_uid),
+    period_no INTEGER NOT NULL DEFAULT 0,
+    period TEXT NOT NULL,
+    stat_key TEXT NOT NULL,
+    step REAL NOT NULL,
+    xp REAL NOT NULL DEFAULT 0,
+    awarded_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(player_uid, period, stat_key, step, period_no)
+);
+
+CREATE INDEX IF NOT EXISTS idx_repeat_awards_player ON repeat_awards(player_uid);
 
 CREATE TABLE IF NOT EXISTS growth_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -152,6 +167,12 @@ async def init_schema(db_manager):
 
 async def _migrate(db, current_version: int):
     """增量迁移：仅在目标结构缺失时执行，保证可重复运行。"""
+    if current_version < 3:
+        # v2→v3：经验列支持 1 位小数。SQLite 类型亲和（INTEGER 列可存非整 REAL），
+        # 无需重建表即可写入小数经验；此处仅确认版本号推进。
+        await db.execute("SELECT 1")
+        await db.commit()
+
     if current_version < 1:
         await db.execute(
             "INSERT OR IGNORE INTO growth_periods (period_no, name, is_current) "

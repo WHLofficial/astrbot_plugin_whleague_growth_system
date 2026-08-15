@@ -21,39 +21,59 @@
   "stats": {
     "goal": { "name": "进球", "xp": 10 },
     "assist": { "name": "助攻", "xp": 5 },
-    "appearance": { "name": "出场", "xp": 2 }
+    "appearance": { "name": "出场", "xp": 2 },
+    "rating": {
+      "name": "评分",
+      "bands": [
+        { "min": 4.0, "max": 6.0, "xp": 5 },
+        { "min": 6.0, "max": 8.0, "xp": 10 },
+        { "min": 8.0, "xp": 20 }
+      ]
+    }
   },
   "milestones": [
     { "stat": "goal", "period": "period", "threshold": 10, "xp": 50 },
-    { "stat": "goal", "period": "career", "threshold": 100, "xp": 1000 }
+    { "stat": "goal", "period": "career", "threshold": 100, "xp": 1000 },
+    { "stat": "appearance", "period": "period", "step": 10, "xp": 50 }
   ],
   "level_xp": 100
 }
 ```
 
-- `stats`：数据项键 → 显示名 + 每单位经验（1 个进球 = 10 经验）。简写 `"goal": 10` 等价。
-- `milestones`：数据项在 `period`（当前成长期内数据值累计）或 `career`（生涯数据值累计）达到阈值时，一次性奖励经验；每个球员每个里程碑**只颁发一次**。
+- `stats`：数据项键 → 显示名 + 经验规则。简写 `"goal": 10` 等价。
+  - **线性**（默认）：经验 = 值 × 单位经验（1 个进球 = 10 经验）。
+  - **区间（bands）**：按值命中的区间给固定经验，未命中任何区间得 0 经验。区间为左闭右开 `[min, max)`，`max` 省略表示开放上界（须为最后一段）；`min` 允许 0；段间不得重叠。适合"评分 4.0~10.0"这类分段给分的数据项。
+- `milestones`：
+  - **一次性**（`threshold`）：数据项在 `period`（当前成长期内数据值累计）或 `career`（生涯数据值累计）达到阈值时，一次性奖励经验；每个球员每个里程碑只颁发一次。
+  - **重复**（`step`）：数据项每累计达到 `step` 次就奖励一次经验，可重复触发（如每累计出场 10 次奖励 50）；成长期推进后重新累计。
+  - 区间型（bands）数据项不能作为里程碑/repeat 的数据项。
 - `level_xp`：每级所需固定经验（默认 100，可在配置修改默认值）。
+- 所有经验值（单位经验、区间奖励、里程碑/重复奖励、level_xp）**最多 1 位小数**（如 2.5）；`step`（次数）必须为整数。
 
 ### CSV / Excel（`规则_xxx.csv`）
 
-带类型列（第 1 列 type，可改列位）：
+带类型列（第 1 列 type，可改列位；band 行用 min/max 列，repeat 行复用 threshold 列作步长）：
 
-| type | stat | name | xp | period | threshold |
-|------|------|------|:--:|:--:|:--:|
-| stat | goal | 进球 | 10 | | |
-| stat | assist | 助攻 | 5 | | |
-| milestone | goal | | 50 | period | 10 |
-| milestone | goal | | 1000 | career | 100 |
-| level | | | 100 | | |
+| type | stat | name | xp | period | threshold | min | max |
+|------|------|------|:--:|:--:|:--:|:--:|:--:|
+| stat | goal | 进球 | 10 | | | | |
+| stat | assist | 助攻 | 5 | | | | |
+| band | rating | 评分 | 5 | | | 4.0 | 6.0 |
+| band | rating | | 10 | | | 6.0 | 8.0 |
+| band | rating | | 20 | | | 8.0 | |
+| milestone | goal | | 50 | period | 10 | | |
+| milestone | goal | | 1000 | career | 100 | | |
+| repeat | appearance | | 50 | period | 10 | | |
+| level | | | 100 | | | | |
 
 无类型列（首列直接是数据项键，其余列位整体左移一列）：
 
-| stat | name | xp | period | threshold |
-|------|------|:--:|:--:|:--:|
-| goal | 进球 | 10 | | |
-| milestone | goal | 50 | period | 10 |
-| level | | 100 | | |
+| stat | name | xp | period | threshold | min | max |
+|------|------|:--:|:--:|:--:|:--:|:--:|
+| goal | 进球 | 10 | | | | |
+| rating | 评分 | 5 | | | 4.0 | 6.0 |
+| milestone | goal | 50 | period | 10 | | |
+| level | | 100 | | | | |
 
 > 规则导入即整体替换旧规则；**历史录入的经验按录入当时的规则冻结**，改规则不影响旧数据。
 

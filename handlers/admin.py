@@ -8,7 +8,7 @@ from astrbot.api.event import AstrMessageEvent, MessageEventResult
 from ..config.defaults import validate_and_cast
 from ..services import rule_parser
 from ..utils.messages import WARN, deny, usage
-from ..utils.security import parse_date, parse_num
+from ..utils.security import fmt_xp, parse_date, parse_num
 
 _KIND_ALIAS = {
     "规则": "rule",
@@ -131,20 +131,29 @@ class AdminHandler:
         lines = [
             f"✅ 已录入 {result['name']}({result['player_uid']}) {result['match_date']}"
             f" vs {result['opponent'] or '?'}",
-            f"数据经验 +{result['stat_xp']}",
+            f"数据经验 +{fmt_xp(result['stat_xp'])}",
         ]
         if result["awarded"]:
             period_label = {"period": "成长期内", "career": "生涯"}
             for m in result["awarded"]:
-                lines.append(
-                    f"🎉 达成里程碑: {m['stat_key']} {period_label[m['period']]}"
-                    f"累计 {m['threshold']:g} → +{m['xp']} 经验"
-                )
-            lines.append(f"本次共 +{result['total_xp']} 经验（含奖励 {result['bonus_xp']}）")
+                if "step" in m:
+                    lines.append(
+                        f"🎉 重复奖励达成: {m['stat_key']} {period_label[m['period']]}"
+                        f"每累计 {fmt_xp(m['step'])} 次 ×{m['count']} → +{fmt_xp(m['gain'])} 经验"
+                    )
+                else:
+                    lines.append(
+                        f"🎉 达成里程碑: {m['stat_key']} {period_label[m['period']]}"
+                        f"累计 {fmt_xp(m['threshold'])} → +{fmt_xp(m['xp'])} 经验"
+                    )
+            lines.append(
+                f"本次共 +{fmt_xp(result['total_xp'])} 经验（含奖励 {fmt_xp(result['bonus_xp'])}）"
+            )
         else:
-            lines.append(f"本次共 +{result['total_xp']} 经验")
+            lines.append(f"本次共 +{fmt_xp(result['total_xp'])} 经验")
         lines.append(
-            f"当前 等级 {result['level']} · 本期经验 {result['xp']} · 生涯经验 {result['xp_total']}"
+            f"当前 等级 {result['level']} · 本期经验 {fmt_xp(result['xp'])}"
+            f" · 生涯经验 {fmt_xp(result['xp_total'])}"
         )
         yield event.plain_result("\n".join(lines))
 
@@ -182,11 +191,11 @@ class AdminHandler:
             f"✅ 成长期推进完成",
             f"关闭: #{result['closed']['period_no']} {result['closed']['name']}",
             f"开启: #{result['opened_no']} {result['opened_name']}",
-            f"结算: 每级 {result['level_xp']} 经验",
+            f"结算: 每级 {fmt_xp(result['level_xp'])} 经验",
             f"升级球员: {result['upgraded']} 名",
         ]
         if result["carryover"]:
-            lines.append(f"溢出经验已结转（共 {result['carried_total']}）")
+            lines.append(f"溢出经验已结转（共 {fmt_xp(result['carried_total'])}）")
         else:
             lines.append("溢出经验已清零（等级保留）")
         yield event.plain_result("\n".join(lines))
@@ -312,5 +321,8 @@ class AdminHandler:
         ]
         lines = ["【成长系统配置】"]
         for k in keys:
-            lines.append(f"· {k} = {cfg.get(k)}")
+            v = cfg.get(k)
+            if k == "default_level_xp":
+                v = fmt_xp(v)
+            lines.append(f"· {k} = {v}")
         yield event.plain_result("\n".join(lines))

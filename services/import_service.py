@@ -168,7 +168,7 @@ class GrowthImportService:
 
     def parse_rule_file(self, file_path: Path) -> dict:
         """解析规则文件为规范结构，失败抛 rule_parser.RuleError。"""
-        default_level_xp = int(self._cfg_get("default_level_xp", 100) or 100)
+        default_level_xp = round(float(self._cfg_get("default_level_xp", 100) or 100), 1)
         ext = file_path.suffix.lower()
         if ext == ".json":
             return rule_parser.parse_rule_json(_parse_json(file_path), default_level_xp)

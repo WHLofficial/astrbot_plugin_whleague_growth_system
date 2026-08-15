@@ -92,7 +92,7 @@ class GrowthDAO:
             return await cur.fetchone()
 
     async def update_player_progress(
-        self, conn, player_uid: str, level: int, xp: int, xp_total: int
+        self, conn, player_uid: str, level: int, xp: float, xp_total: float
     ) -> None:
         await conn.execute(
             "UPDATE players SET level=?, xp=?, xp_total=?, "
@@ -260,6 +260,44 @@ class GrowthDAO:
         return await self._db.fetchall(
             "SELECT * FROM milestone_awards WHERE player_uid=? ORDER BY awarded_at DESC, id DESC",
             (player_uid,),
+        )
+
+    async def list_repeat_awards(self, player_uid: str) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM repeat_awards WHERE player_uid=? ORDER BY updated_at DESC, id DESC",
+            (player_uid,),
+        )
+
+    # ─── repeat awards（每累计 step 次奖励，可重复）─────────
+
+    async def get_repeat_award(
+        self, conn, player_uid: str, period: str, stat_key: str, step: float, period_no: int
+    ):
+        async with conn.execute(
+            "SELECT * FROM repeat_awards WHERE player_uid=? AND period=? AND "
+            "stat_key=? AND step=? AND period_no=?",
+            (player_uid, period, stat_key, step, period_no),
+        ) as cur:
+            return await cur.fetchone()
+
+    async def upsert_repeat_award(
+        self,
+        conn,
+        player_uid: str,
+        period_no: int,
+        period: str,
+        stat_key: str,
+        step: float,
+        xp: int,
+        awarded_count: int,
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO repeat_awards (player_uid, period_no, period, stat_key, "
+            "step, xp, awarded_count) VALUES (?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(player_uid, period, stat_key, step, period_no) DO UPDATE SET "
+            "awarded_count=excluded.awarded_count, xp=excluded.xp, "
+            "updated_at=datetime('now','localtime')",
+            (player_uid, period_no, period, stat_key, step, xp, awarded_count),
         )
 
     # ─── growth rules ──────────────────────────────────────

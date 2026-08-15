@@ -5,6 +5,7 @@ from collections.abc import AsyncGenerator
 from astrbot.api.event import AstrMessageEvent, MessageEventResult
 
 from ..utils.messages import build_help, usage
+from ..utils.security import fmt_xp
 
 
 class PlayerHandler:
@@ -53,8 +54,8 @@ class PlayerHandler:
             f"【{p['name']}】({p['player_uid']})",
             f"球队: {p['team'] or '无'}",
             f"等级: {p['level']}",
-            f"本期经验: {p['xp']}",
-            f"生涯经验: {p['xp_total']}",
+            f"本期经验: {fmt_xp(p['xp'])}",
+            f"生涯经验: {fmt_xp(p['xp_total'])}",
         ]
         awards = profile["awards"]
         if awards:
@@ -62,12 +63,21 @@ class PlayerHandler:
             lines.append(f"已达成里程碑（{len(awards)} 项）:")
             for a in awards[:10]:
                 lines.append(f"· {a['stat_key']} {period_label.get(a['period'], a['period'])}"
-                             f"累计 {a['threshold']:g}（+{a['xp']}）")
+                             f"累计 {fmt_xp(a['threshold'])}（+{fmt_xp(a['xp'])}）")
+        repeat_awards = profile["repeat_awards"]
+        if repeat_awards:
+            period_label = {"period": "成长期内", "career": "生涯"}
+            lines.append(f"重复奖励达成（{len(repeat_awards)} 项）:")
+            for a in repeat_awards[:10]:
+                lines.append(
+                    f"· {a['stat_key']} {period_label.get(a['period'], a['period'])}"
+                    f"已累计 {int(a['step']) * a['awarded_count']}（每 {fmt_xp(a['step'])} 次 +{fmt_xp(a['xp'])}）"
+                )
         app = profile["appearances"]
         if app:
             lines.append("最近比赛:")
             for a in app[:10]:
-                lines.append(f"· {a['match_date']} vs {a['opponent'] or '?'} 经验 +{a['total_xp']}")
+                lines.append(f"· {a['match_date']} vs {a['opponent'] or '?'} 经验 +{fmt_xp(a['total_xp'])}")
         yield event.plain_result("\n".join(lines))
 
     async def rank(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
@@ -91,7 +101,7 @@ class PlayerHandler:
         lines = [f"{title}（第 {result['page']}/{result['total_pages']} 页）"]
         for i, p in enumerate(rows, start=(result["page"] - 1) * page_size + 1):
             val = p["xp_total"] if mode == "career" else p["xp"]
-            lines.append(f"{i}. {p['name']}({p['player_uid']}) Lv{p['level']} 经验 {val}")
+            lines.append(f"{i}. {p['name']}({p['player_uid']}) Lv{p['level']} 经验 {fmt_xp(val)}")
         yield event.plain_result("\n".join(lines))
 
     async def list_players(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
@@ -119,7 +129,7 @@ class PlayerHandler:
             lines.append(f"【当前成长期】#{cur['period_no']} {cur['name']}（起始 {cur['started_at']}）")
         lines.append(f"球员数: {st['player_count']}")
         if rule:
-            lines.append(f"每级所需经验: {rule['level_xp']}")
+            lines.append(f"每级所需经验: {fmt_xp(rule['level_xp'])}")
         else:
             lines.append("成长规则: 未导入")
         if len(st["periods"]) > 1:

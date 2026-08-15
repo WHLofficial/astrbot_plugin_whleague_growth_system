@@ -1,7 +1,7 @@
 name: astrbot_plugin_whleague_growth_system # 插件唯一识别名，以 astrbot_plugin_ 前缀开头
 display_name: 成长系统 for WHL # 用于展示的名字，可以是方便人类阅读的名字
 desc: 球员成长系统：按规则（可导入 JSON/CSV/Excel）将每场比赛的多项数据换算为成长经验，支持成长期里程碑奖励、等级成长与成长期推进。
-version: v0.2.0 # 插件版本号
+version: v0.3.0 # 插件版本号
 author: WHLofficial # 作者
 repo: https://github.com/WHLofficial/astrbot_plugin_whleague_growth_system # 插件的仓库地址
 support_platforms:
