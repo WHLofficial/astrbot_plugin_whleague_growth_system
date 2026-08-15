@@ -104,6 +104,10 @@ class GrowthImportService:
     def _col(self, key: str) -> int:
         return int(self._cfg_get(key, 0) or 0)
 
+    def kind_from_name(self, file_name: str) -> str | None:
+        """实例方法：委托模块级 kind_from_name（群文件捕获/命令共用）。"""
+        return kind_from_name(file_name)
+
     def list_files(self) -> list:
         files = [
             p for p in self.imports_dir.iterdir()

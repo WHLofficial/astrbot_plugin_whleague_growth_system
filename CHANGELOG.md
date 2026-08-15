@@ -2,6 +2,13 @@
 
 本项目的版本号以 `metadata.yaml` / `_conf_schema.json`（`PLUGIN_VERSION`）为准。
 
+## [0.4.1] - 2026-08-15
+
+### 修复
+
+- 群文件捕获崩溃：`kind_from_name` 为模块级函数，但 `on_group_message`（群内发文件自动识别）与 `/成长导入文件`、`/成长确认导入` 未指定类型时均按实例方法调用，服务器收到群文件时触发 `AttributeError: 'GrowthImportService' object has no attribute 'kind_from_name'`。新增实例方法委托模块级函数，两处调用点行为不变。
+- 回归测试增至 58 个用例（新增实例方法调用锁定，防止复现崩溃）。
+
 ## [0.4.0] - 2026-08-15
 
 ### 新增

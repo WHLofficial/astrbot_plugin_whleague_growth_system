@@ -390,6 +390,18 @@ def test_kind_from_name():
     assert kind_from_name("report.csv") is None
 
 
+def test_kind_from_name_instance_method():
+    """回归：群文件捕获/命令按实例方法调用 kind_from_name，缺失会 AttributeError 崩溃。"""
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        assert imp.kind_from_name("规则_a.json") == "rule"
+        assert imp.kind_from_name("球员_a.csv") == "players"
+        assert imp.kind_from_name("比赛_a.csv") == "matches"
+        assert imp.kind_from_name("report.csv") is None
+    finally:
+        asyncio.run(env["db"].close())
+
+
 # ─── 工具函数 ─────────────────────────────────────────────
 
 def test_parse_date_variants():
