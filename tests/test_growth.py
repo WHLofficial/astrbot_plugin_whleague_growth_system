@@ -12,6 +12,10 @@ from astrbot_plugin_whleague_growth_system.db.connection import DatabaseManager
 from astrbot_plugin_whleague_growth_system.db.dao import GrowthDAO
 from astrbot_plugin_whleague_growth_system.db.schema import init_schema
 from astrbot_plugin_whleague_growth_system.services.growth_service import GrowthService
+from astrbot_plugin_whleague_growth_system.services.export_service import (
+    ExportService,
+    _HEADERS,
+)
 from astrbot_plugin_whleague_growth_system.services.import_service import GrowthImportService, kind_from_name
 from astrbot_plugin_whleague_growth_system.services.rule_parser import (
     RuleError,
@@ -958,6 +962,265 @@ def test_period_status_and_result():
             # 不存在的期号 / 无快照期
             assert await service.period_result(99) is None
             assert await service.period_result(2) is None  # 当期尚无快照
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+# ─── 成长数据导出 / 预览 ─────────────────────────────────
+
+def test_export_period_rows():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            # p01 25 球 → 250+里程碑50=300 → 升3溢出0；p02 6 球 → 60 → 升0溢出60
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            await service.record_match("p02", "2026-08-01", "", {"goal": 6}, "admin")
+            await service.advance_period("成长期2", True)
+            export = ExportService(service._db, dao)
+            rows = await export.rows_for_period(1)
+            assert len(rows) == 2
+            by_uid = {r["player_uid"]: r for r in rows}
+            # p01: 期初 0（首期无结转），期内获得 = 250 数据 + 50 里程碑 = 300，期末 300
+            assert by_uid["p01"]["xp_start"] == 0.0
+            assert by_uid["p01"]["xp_gained"] == 300.0
+            assert by_uid["p01"]["xp_end"] == 300.0
+            assert by_uid["p01"]["level_gained"] == 3
+            assert by_uid["p01"]["xp_carryover"] == 0.0
+            # p02: 期初 0，期内获得 60，期末 60
+            assert by_uid["p02"]["xp_start"] == 0.0
+            assert by_uid["p02"]["xp_gained"] == 60.0
+            assert by_uid["p02"]["xp_end"] == 60.0
+            assert by_uid["p02"]["level_gained"] == 0
+            assert by_uid["p02"]["xp_carryover"] == 60.0
+            # 按期末总经验降序
+            assert rows[0]["player_uid"] == "p01"
+            # 球队字段随快照 JOIN 带出
+            assert by_uid["p01"]["player_team"] == "A队"
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_export_current_rows():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            export = ExportService(service._db, dao)
+            rows = await export.rows_current()
+            by_uid = {r["player_uid"]: r for r in rows}
+            # 当前期：期初 0（首期无结转），期内获得 300（含里程碑 50），期末 = 球员 xp
+            assert by_uid["p01"]["xp_start"] == 0.0
+            assert by_uid["p01"]["xp_gained"] == 300.0
+            assert by_uid["p01"]["xp_end"] == 300.0
+            assert by_uid["p01"]["level_gained"] is None
+            assert by_uid["p01"]["xp_carryover"] is None
+            assert by_uid["p01"]["level"] == 1
+            assert by_uid["p02"]["xp_start"] == 0.0
+            assert by_uid["p02"]["xp_gained"] == 0.0
+            assert by_uid["p02"]["xp_end"] == 0.0
+            # 按当前经验降序
+            assert rows[0]["player_uid"] == "p01"
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_export_overwrite_keeps_identity():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 5}, "admin")
+            await service.record_match("p01", "2026-08-01", "", {"goal": 3}, "admin")
+            export = ExportService(service._db, dao)
+            rows = await export.rows_current()
+            r = rows[0]
+            # 覆盖录入后：期内获得 = 期末 − 期初（5 球记录被替换为 3 球）
+            assert r["xp_gained"] == 30.0
+            assert r["xp_start"] == 0.0
+            assert r["xp_end"] == 30.0
+            await service.advance_period("成长期2", True)
+            rows1 = await export.rows_for_period(1)
+            r1 = rows1[0]
+            assert r1["xp_gained"] == 30.0
+            assert r1["xp_start"] == 0.0
+            assert r1["xp_end"] == 30.0
+            assert r1["level_gained"] == 0
+            assert r1["xp_carryover"] == 30.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_export_includes_period_bonus():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            # 25 球 → 数据 250 + 成长期里程碑 +50 = 300；期内获得必须含奖励
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            export = ExportService(service._db, dao)
+            rows = await export.rows_current()
+            r = rows[0]
+            assert r["xp_start"] == 0.0
+            assert r["xp_gained"] == 300.0
+            assert r["xp_end"] == 300.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_export_carryover_strategy_next_start():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            await service.record_match("p02", "2026-08-01", "", {"goal": 6}, "admin")
+            # 保留：p02 溢出 60 结转 → 新期期初 = 60
+            await service.advance_period("成长期2", True)
+            export = ExportService(service._db, dao)
+            rows = await export.rows_current()
+            p02 = {r["player_uid"]: r for r in rows}["p02"]
+            assert p02["xp_start"] == 60.0
+            assert p02["xp_gained"] == 0.0
+            assert p02["xp_end"] == 60.0
+            # 清零：第二期无新增，推进清零 → 新期期初 = 0
+            await service.advance_period("成长期3", False)
+            rows2 = await export.rows_current()
+            p02b = {r["player_uid"]: r for r in rows2}["p02"]
+            assert p02b["xp_start"] == 0.0
+            assert p02b["xp_end"] == 0.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_export_build_file_xlsx():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            export = ExportService(service._db, dao)
+            rows = await export.rows_current()
+            path, fmt = export.build_file(rows, "测试标题", "测试副标题", "当前成长期1_成长数据")
+            assert fmt == "xlsx" and path.suffix == ".xlsx" and path.is_file()
+            from openpyxl import load_workbook
+
+            wb = load_workbook(path)
+            try:
+                ws = wb.worksheets[0]
+                assert ws.title == "成长数据"
+                assert ws["A1"].value == "测试标题"
+                assert ws["A2"].value == "测试副标题"
+                assert [ws.cell(row=3, column=j).value for j in range(1, 9)] == _HEADERS
+                # 数据行：p01 期初0 / 获得300（含里程碑50）/ 期末300 / 未结算 ×2
+                row = [ws.cell(row=4, column=j).value for j in range(1, 9)]
+                assert row[:3] == ["p01", "球员一", "A队"]
+                assert row[3] == 0.0 and row[4] == 300.0 and row[5] == 300.0
+                assert row[6] == "未结算" and row[7] == "未结算"
+                # 汇总行（2 名球员 → 第 6 行）
+                assert ws.cell(row=6, column=1).value == "合计"
+                assert ws.cell(row=6, column=6).value == 300.0
+                # 冻结窗格 + 标题合并
+                assert ws.freeze_panes == "A4"
+                merged = [str(rng) for rng in ws.merged_cells.ranges]
+                assert "A1:H1" in merged and "A2:H2" in merged
+            finally:
+                wb.close()
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_export_build_file_fallback(monkeypatch):
+    import astrbot_plugin_whleague_growth_system.services.export_service as es
+
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            export = ExportService(service._db, dao)
+            rows = await export.rows_current()
+
+            def _boom(*a, **k):
+                raise RuntimeError("格式构建失败")
+
+            # openpyxl 不可用 → 降级 CSV（utf-8-sig）
+            monkeypatch.setattr(es, "_build_xlsx", _boom)
+            path, fmt = export.build_file(rows, "标题", "副标题", "当前成长期1_成长数据")
+            assert fmt == "csv" and path.suffix == ".csv"
+            assert path.read_bytes()[:3] == b"\xef\xbb\xbf"
+            text = path.read_text(encoding="utf-8-sig")
+            assert "球员ID" in text and "300" in text and "未结算" in text
+            # CSV 也不可用 → 降级 TXT
+            monkeypatch.setattr(es, "_build_csv", _boom)
+            path2, fmt2 = export.build_file(rows, "标题", "副标题", "当前成长期1_成长数据")
+            assert fmt2 == "txt" and path2.suffix == ".txt"
+            text2 = path2.read_text(encoding="utf-8")
+            assert "合计" in text2 and "|" in text2 and "未结算" in text2
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_export_build_export_current():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            export = ExportService(service._db, dao)
+            res = await export.build_export(None)
+            assert "当前成长期" in res["title"]
+            assert res["path"].is_file()
+            assert len(res["rows"]) == 2
+            # 不存在的期号 / 无快照期
+            with pytest.raises(ValueError):
+                await export.build_export(99)
+            with pytest.raises(ValueError):
+                await export.build_export(2)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_preview_handler_output():
+    import types
+
+    from astrbot_plugin_whleague_growth_system.handlers.player import PlayerHandler
+
+    class _FakeEvent:
+        def __init__(self):
+            self.results = []
+
+        def plain_result(self, text):
+            self.results.append(text)
+            return self
+
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            export = ExportService(service._db, dao)
+            plugin = types.SimpleNamespace(
+                dao=dao, growth_service=service, import_service=imp, export_service=export
+            )
+            ph = PlayerHandler(plugin)
+            ev = _FakeEvent()
+            async for _ in ph.preview(ev):
+                pass
+            text = ev.results[0]
+            assert "当前成长期" in text and "期内累计获得经验 300" in text
+            assert "球员一(p01)" in text
+            assert "期初 0" in text and "总 300" in text and "Lv1" in text
         _run_async(_run())
     finally:
         asyncio.run(env["db"].close())

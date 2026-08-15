@@ -17,6 +17,7 @@ from .config.defaults import DEFAULT_CONFIG, PLUGIN_VERSION
 from .db.connection import DatabaseManager
 from .db.dao import GrowthDAO
 from .db.schema import init_schema
+from .services.export_service import ExportService
 from .services.growth_service import GrowthService
 from .services.import_service import GrowthImportService
 
@@ -46,6 +47,7 @@ class GrowthSystemPlugin(Star):
         self.dao: GrowthDAO | None = None
         self.growth_service: GrowthService | None = None
         self.import_service: GrowthImportService | None = None
+        self.export_service: ExportService | None = None
         self.player_handler = None
         self.admin_handler = None
 
@@ -58,6 +60,7 @@ class GrowthSystemPlugin(Star):
         self.import_service = GrowthImportService(
             self.db, self.dao, self.config_cache.get, self.growth_service
         )
+        self.export_service = ExportService(self.db, self.dao)
         from .handlers.admin import AdminHandler
         from .handlers.player import PlayerHandler
 
@@ -121,6 +124,13 @@ class GrowthSystemPlugin(Star):
         async for r in self.player_handler.period_status(event):
             yield r
 
+    @filter.command("成长预览")
+    async def cmd_preview(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
+        if not _is_group_allowed(self.config_cache, event.get_group_id()):
+            return
+        async for r in self.player_handler.preview(event):
+            yield r
+
     @filter.command("成长导入列表")
     async def cmd_import_list(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
@@ -148,6 +158,13 @@ class GrowthSystemPlugin(Star):
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.admin_handler.advance(event):
+            yield r
+
+    @filter.command("成长导出")
+    async def cmd_export(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
+        if not _is_group_allowed(self.config_cache, event.get_group_id()):
+            return
+        async for r in self.admin_handler.export(event):
             yield r
 
     @filter.command("成长导入文件")

@@ -89,10 +89,24 @@ class GrowthDAO:
 
     async def list_period_snapshots(self, period_no: int) -> list:
         return await self._db.fetchall(
-            "SELECT s.*, p.name AS player_name FROM period_snapshots s "
+            "SELECT s.*, p.name AS player_name, p.team AS player_team "
+            "FROM period_snapshots s "
             "JOIN players p ON p.player_uid=s.player_uid "
             "WHERE s.period_no=? ORDER BY s.xp_period DESC, s.player_uid",
             (period_no,),
+        )
+
+    async def get_snapshots_carryover(self, period_no: int) -> dict:
+        """该成长期开始时每位球员的账面经验（= 上一期快照的溢出结转）。"""
+        rows = await self._db.fetchall(
+            "SELECT player_uid, xp_carryover FROM period_snapshots WHERE period_no=?",
+            (period_no,),
+        )
+        return {r["player_uid"]: round(float(r["xp_carryover"]), 1) for r in rows}
+
+    async def list_all_active_players(self) -> list:
+        return await self._db.fetchall(
+            "SELECT * FROM players WHERE active=1 ORDER BY player_uid"
         )
 
     async def summarize_period(self, period_no: int):

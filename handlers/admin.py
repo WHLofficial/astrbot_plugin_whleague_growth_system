@@ -1,9 +1,10 @@
-"""管理侧命令处理器：上报、推进、导入、配置。"""
+"""管理侧命令处理器：上报、推进、导入、配置、导出。"""
 
 from collections.abc import AsyncGenerator
 
 from astrbot.api import logger
 from astrbot.api.event import AstrMessageEvent, MessageEventResult
+from astrbot.api.message_components import File
 
 from ..config.defaults import validate_and_cast
 from ..services import rule_parser
@@ -54,6 +55,10 @@ class AdminHandler:
     @property
     def import_service(self):
         return self._plugin.import_service
+
+    @property
+    def export_service(self):
+        return self._plugin.export_service
 
     async def _is_admin(self, event) -> bool:
         if event.is_admin():
@@ -198,6 +203,57 @@ class AdminHandler:
             lines.append(f"溢出经验已结转（共 {fmt_xp(result['carried_total'])}）")
         else:
             lines.append("溢出经验已清零（等级保留）")
+        # 自动导出刚结束的成长期（发群失败仅提示路径，不影响推进结果）
+        export_note = await self._auto_export(event, result["closed"]["period_no"])
+        if export_note:
+            lines.append(export_note)
+        yield event.plain_result("\n".join(lines))
+
+    async def _auto_export(self, event, period_no: int) -> str | None:
+        """推进后自动导出刚结束成长期的成长数据文件（发群优先，失败附服务器路径）。"""
+        try:
+            export = await self.export_service.build_export(period_no)
+        except Exception as e:
+            logger.error(f"推进自动导出失败: {e}")
+            return None
+        sent = False
+        try:
+            await event.send(
+                MessageChain(chain=[File(name=export["path"].name, file=str(export["path"]))])
+                .message(f"📤 成长期#{period_no} 成长数据已导出")
+            )
+            sent = True
+        except Exception as e:
+            logger.warning(f"导出文件发群失败，已保存服务器: {e}")
+        if sent:
+            return None
+        return f"📁 成长数据文件已保存: {export['path']}（平台不支持自动发文件，可手动下载）"
+
+    async def export(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
+        if not await self._is_admin(event):
+            async for r in self._deny(event):
+                yield r
+            return
+        parts = event.get_message_str().split()
+        period_no = None
+        if len(parts) >= 2:
+            raw = parts[1].strip()
+            if not raw.isdigit():
+                yield event.plain_result(usage("成长导出", "[期号]", "/成长导出 2"))
+                return
+            period_no = int(raw)
+        try:
+            export = await self.export_service.build_export(period_no)
+        except ValueError as e:
+            yield event.plain_result(f"{WARN}{e}")
+            return
+        except Exception as e:
+            logger.error(f"Growth export error: {e}")
+            yield event.plain_result(f"{WARN}导出失败: {e}")
+            return
+        lines = [f"📤 {export['title']}（{len(export['rows'])} 人）"]
+        yield event.chain_result([File(name=export["path"].name, file=str(export["path"]))])
+        lines.append(f"📁 服务器备份: {export['path']}（平台不支持自动发文件时可手动下载）")
         yield event.plain_result("\n".join(lines))
 
     # ─── 导入 ──────────────────────────────────────────────

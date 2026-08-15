@@ -24,6 +24,10 @@ class PlayerHandler:
     def import_service(self):
         return self._plugin.import_service
 
+    @property
+    def export_service(self):
+        return self._plugin.export_service
+
     async def help(self, event: AstrMessageEvent, is_admin: bool = False) -> AsyncGenerator[MessageEventResult, None]:
         yield event.plain_result(build_help(is_admin))
 
@@ -118,6 +122,34 @@ class PlayerHandler:
         lines = [f"【球员名单】（第 {page}/{total_pages} 页 · 共 {total} 人）"]
         for p in rows:
             lines.append(f"· {p['name']}({p['player_uid']}) {p['team'] or ''} Lv{p['level']}".rstrip())
+        yield event.plain_result("\n".join(lines))
+
+    async def preview(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
+        """预览当前未结束成长期的成长数据（公开）。"""
+        period = await self.dao.get_current_period()
+        if period is None:
+            yield event.plain_result("不存在当前成长期，暂无可预览的数据。")
+            return
+        rows = await self.export_service.rows_current()
+        if not rows:
+            yield event.plain_result(
+                f"【当前成长期 #{period['period_no']} {period['name']}】\n暂无球员数据，请管理员导入球员库后查看。"
+            )
+            return
+        gained = round(sum(float(r["xp_gained"]) for r in rows), 1)
+        lines = [
+            f"【当前成长期 #{period['period_no']} {period['name']}】",
+            f"共 {len(rows)} 人 · 期内累计获得经验 {fmt_xp(gained)}",
+            "球员名(ID) | 期初 | 期内获得 | 当前总经验 | 等级",
+        ]
+        for r in rows[:50]:
+            lines.append(
+                f"· {r['player_name']}({r['player_uid']}) "
+                f"期初 {fmt_xp(r['xp_start'])} | 获得 {fmt_xp(r['xp_gained'])}"
+                f" | 总 {fmt_xp(r['xp_end'])} | Lv{r['level']}"
+            )
+        if len(rows) > 50:
+            lines.append(f"… 其余 {len(rows) - 50} 人（完整数据请管理员执行 /成长导出）")
         yield event.plain_result("\n".join(lines))
 
     async def period_status(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
