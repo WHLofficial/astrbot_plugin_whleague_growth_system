@@ -882,3 +882,82 @@ def test_config_bool_false_parsed():
         _run_async(_run())
     finally:
         asyncio.run(env["db"].close())
+
+
+# ─── 成长期结果快照 ──────────────────────────────────────
+
+def test_period_snapshot_recorded_on_advance():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            # 规则含成长期里程碑（goal 累计10→+50）：
+            # p01 录 25 球 → 数据250+里程碑50=300 → 升3级溢出0
+            # p02 录 6 球 → 60 → 升0级溢出60
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            await service.record_match("p02", "2026-08-01", "", {"goal": 6}, "admin")
+            r = await service.advance_period("成长期2", True)
+            assert r["opened_no"] == 2
+            # 快照存在且字段正确
+            snaps = await dao.list_period_snapshots(1)
+            by_uid = {s["player_uid"]: s for s in snaps}
+            assert set(by_uid) == {"p01", "p02"}
+            s1 = by_uid["p01"]
+            assert s1["level_end"] == 4 and s1["level_gained"] == 3
+            assert s1["xp_period"] == 300.0 and s1["xp_carryover"] == 0.0
+            assert s1["player_name"] == "球员一"
+            s2 = by_uid["p02"]
+            assert s2["level_end"] == 1 and s2["level_gained"] == 0
+            assert s2["xp_period"] == 60.0 and s2["xp_carryover"] == 60.0
+            # 摘要聚合
+            summary = await dao.summarize_period(1)
+            assert summary["player_count"] == 2
+            assert summary["upgraded_count"] == 1
+            assert summary["xp_total"] == 360.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_period_snapshot_clear_strategy_carryover_zero():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            # 清零策略：结转记 0；p01 xp=300（含里程碑+50）
+            await service.advance_period("成长期2", False)
+            snaps = await dao.list_period_snapshots(1)
+            s = [x for x in snaps if x["player_uid"] == "p01"][0]
+            assert s["level_end"] == 4 and s["level_gained"] == 3
+            assert s["xp_period"] == 300.0 and s["xp_carryover"] == 0.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_period_status_and_result():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "", {"goal": 25}, "admin")
+            await service.advance_period("成长期2", True)
+            # 仅 p01 有数据（300→升3溢出0），p02 未录（0）；当前期总经验 = 0
+            st = await service.period_status()
+            assert st["current"]["period_no"] == 2
+            assert st["current_xp"] == 0.0
+            assert len(st["summaries"]) == 1
+            assert st["summaries"][0]["player_count"] == 2
+            assert st["summaries"][0]["upgraded_count"] == 1
+            assert st["summaries"][0]["xp_total"] == 300.0
+            # 期结果明细
+            res = await service.period_result(1)
+            assert res is not None and res["period"]["period_no"] == 1
+            assert len(res["rows"]) == 2
+            # 不存在的期号 / 无快照期
+            assert await service.period_result(99) is None
+            assert await service.period_result(2) is None  # 当期尚无快照
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())

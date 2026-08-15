@@ -121,19 +121,47 @@ class PlayerHandler:
         yield event.plain_result("\n".join(lines))
 
     async def period_status(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
+        parts = event.get_message_str().split()
+        # 带期号：查看该成长期结果明细
+        if len(parts) >= 2 and parts[1].strip().isdigit():
+            period_no = int(parts[1].strip())
+            result = await self.growth.period_result(period_no)
+            if result is None:
+                yield event.plain_result(f"未找到成长期 #{period_no} 的结果（期号不存在或该期尚无快照）")
+                return
+            p = result["period"]
+            rows = result["rows"]
+            lines = [f"【成长期#{p['period_no']} {p['name']} 结果】（{len(rows)} 人）"]
+            for s in rows:
+                lines.append(
+                    f"· {s['player_name']}({s['player_uid']}) 期末Lv{s['level_end']}"
+                    f"（+{s['level_gained']}级）· 本期经验 {fmt_xp(s['xp_period'])}"
+                    f" · 结转 {fmt_xp(s['xp_carryover'])}"
+                )
+            yield event.plain_result("\n".join(lines))
+            return
+
         st = await self.growth.period_status()
         cur = st["current"]
         rule = st["rule"]
         lines = []
         if cur:
-            lines.append(f"【当前成长期】#{cur['period_no']} {cur['name']}（起始 {cur['started_at']}）")
-        lines.append(f"球员数: {st['player_count']}")
+            lines.append(
+                f"【当前成长期】#{cur['period_no']} {cur['name']}"
+                f"（起始 {cur['started_at']}）"
+            )
+        lines.append(f"球员数: {st['player_count']} · 当前期总经验 {fmt_xp(st['current_xp'])}")
         if rule:
             lines.append(f"每级所需经验: {fmt_xp(rule['level_xp'])}")
         else:
             lines.append("成长规则: 未导入")
-        if len(st["periods"]) > 1:
+        summaries = st["summaries"]
+        if summaries:
             lines.append("历史成长期:")
-            for p in st["periods"][1:5]:
-                lines.append(f"· #{p['period_no']} {p['name']}（{p['started_at']} ~ {p['ended_at'] or '进行中'}）")
+            for s in summaries[:5]:
+                lines.append(
+                    f"· #{s['period_no']} {s['name']}：{s['player_count']}人"
+                    f" · 升级{s['upgraded_count']}人 · 期末总经验 {fmt_xp(s['xp_total'])}"
+                )
+            lines.append("回复 /成长期状态 <期号> 查看该期球员明细")
         yield event.plain_result("\n".join(lines))

@@ -246,11 +246,18 @@ class GrowthService:
             carried = 0
             for p in players:
                 uid = p["player_uid"]
-                xp10 = int(round(float(p["xp"]) * 10))
+                old_level = int(p["level"])
+                xp_period = round(float(p["xp"]), 1)
+                xp10 = int(round(xp_period * 10))
                 gained = xp10 // lv10
                 overflow = (xp10 % lv10) / 10
-                new_level = int(p["level"]) + gained
+                new_level = old_level + gained
                 new_xp = overflow if carryover else 0
+                # 期末快照（结算前写入，等级/本期经验/结转可追溯）
+                await self._dao.insert_period_snapshot(
+                    conn, period_no, uid, new_level, gained,
+                    xp_period, overflow if carryover else 0,
+                )
                 await self._dao.update_player_progress(
                     conn, uid, new_level, new_xp, float(p["xp_total"])
                 )
@@ -306,9 +313,39 @@ class GrowthService:
         periods = await self._dao.list_periods()
         count = await self._dao.count_players()
         rule = await self.get_rule()
+        summaries = []
+        for p in periods:
+            if p["is_current"]:
+                continue
+            row = await self._dao.summarize_period(p["period_no"])
+            summaries.append(
+                {
+                    "period_no": p["period_no"],
+                    "name": p["name"],
+                    "started_at": p["started_at"],
+                    "ended_at": p["ended_at"],
+                    "player_count": int(row["player_count"]) if row else 0,
+                    "upgraded_count": int(row["upgraded_count"]) if row else 0,
+                    "xp_total": round(float(row["xp_total"]), 1) if row else 0.0,
+                }
+            )
         return {
             "current": current,
             "periods": periods,
             "player_count": count,
+            "current_xp": await self._dao.sum_current_xp(),
             "rule": rule,
+            "summaries": summaries,
         }
+
+    async def period_result(self, period_no: int) -> dict | None:
+        """返回指定成长期的球员明细（无快照/期号不存在返回 None）。"""
+        period = await self._db.fetchone(
+            "SELECT * FROM growth_periods WHERE period_no=?", (period_no,)
+        )
+        if period is None:
+            return None
+        rows = await self._dao.list_period_snapshots(period_no)
+        if not rows:
+            return None
+        return {"period": period, "rows": rows}

@@ -1,6 +1,6 @@
 from astrbot.api import logger
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SQL_CREATE_TABLES = r"""
 
@@ -91,6 +91,20 @@ CREATE TABLE IF NOT EXISTS repeat_awards (
 
 CREATE INDEX IF NOT EXISTS idx_repeat_awards_player ON repeat_awards(player_uid);
 
+CREATE TABLE IF NOT EXISTS period_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    period_no INTEGER NOT NULL REFERENCES growth_periods(period_no),
+    player_uid TEXT NOT NULL REFERENCES players(player_uid),
+    level_end INTEGER NOT NULL DEFAULT 1,
+    level_gained INTEGER NOT NULL DEFAULT 0,
+    xp_period REAL NOT NULL DEFAULT 0,
+    xp_carryover REAL NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(period_no, player_uid)
+);
+
+CREATE INDEX IF NOT EXISTS idx_snapshots_period ON period_snapshots(period_no);
+
 CREATE TABLE IF NOT EXISTS growth_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     label TEXT NOT NULL DEFAULT '',
@@ -167,6 +181,12 @@ async def init_schema(db_manager):
 
 async def _migrate(db, current_version: int):
     """增量迁移：仅在目标结构缺失时执行，保证可重复运行。"""
+    if current_version < 4:
+        # v3→v4：period_snapshots 表由 executescript 的 CREATE TABLE IF NOT EXISTS 自动补建，
+        # 此处仅确认版本号推进。
+        await db.execute("SELECT 1")
+        await db.commit()
+
     if current_version < 3:
         # v2→v3：经验列支持 1 位小数。SQLite 类型亲和（INTEGER 列可存非整 REAL），
         # 无需重建表即可写入小数经验；此处仅确认版本号推进。

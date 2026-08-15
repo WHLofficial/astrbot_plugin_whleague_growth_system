@@ -65,6 +65,51 @@ class GrowthDAO:
             "SELECT * FROM growth_periods ORDER BY period_no DESC"
         )
 
+    # ─── period snapshots（期末快照）───────────────────────
+
+    async def insert_period_snapshot(
+        self,
+        conn,
+        period_no: int,
+        player_uid: str,
+        level_end: int,
+        level_gained: int,
+        xp_period: float,
+        xp_carryover: float,
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO period_snapshots (period_no, player_uid, level_end, "
+            "level_gained, xp_period, xp_carryover) VALUES (?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(period_no, player_uid) DO UPDATE SET "
+            "level_end=excluded.level_end, level_gained=excluded.level_gained, "
+            "xp_period=excluded.xp_period, xp_carryover=excluded.xp_carryover, "
+            "created_at=datetime('now','localtime')",
+            (period_no, player_uid, level_end, level_gained, xp_period, xp_carryover),
+        )
+
+    async def list_period_snapshots(self, period_no: int) -> list:
+        return await self._db.fetchall(
+            "SELECT s.*, p.name AS player_name FROM period_snapshots s "
+            "JOIN players p ON p.player_uid=s.player_uid "
+            "WHERE s.period_no=? ORDER BY s.xp_period DESC, s.player_uid",
+            (period_no,),
+        )
+
+    async def summarize_period(self, period_no: int):
+        return await self._db.fetchone(
+            "SELECT COUNT(*) AS player_count, "
+            "COALESCE(SUM(CASE WHEN level_gained>0 THEN 1 ELSE 0 END), 0) AS upgraded_count, "
+            "COALESCE(SUM(xp_period), 0) AS xp_total "
+            "FROM period_snapshots WHERE period_no=?",
+            (period_no,),
+        )
+
+    async def sum_current_xp(self) -> float:
+        row = await self._db.fetchone(
+            "SELECT COALESCE(SUM(xp), 0) AS v FROM players WHERE active=1"
+        )
+        return float(row["v"]) if row else 0.0
+
     # ─── players ───────────────────────────────────────────
 
     async def upsert_player(
