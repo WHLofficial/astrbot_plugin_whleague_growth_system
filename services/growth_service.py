@@ -230,6 +230,7 @@ class GrowthService:
         """批量录入（文件导入），整个批次一个事务，失败整体回滚。
 
         entries: [{"player_uid", "match_date", "opponent", "stats": {key: value}}, ...]
+        player_uid 可为球员 ID 或球员姓名（见 _resolve_player）。
         """
         if not entries:
             return {"ok": 0, "errors": [], "results": []}
@@ -247,10 +248,19 @@ class GrowthService:
         period_no = period["period_no"] if period else 1
 
         async def _tx(conn):
+            from ..utils.security import normalize_name
+
+            players = await self._dao.list_all_active_players_conn(conn)
+            # 索引只建一次：批量导入 5000 行 × 全量球员时避免每行重建
+            uid_map = {p["player_uid"]: p for p in players}
+            by_name: dict[str, list] = {}
+            for p in players:
+                by_name.setdefault(normalize_name(p["name"]), []).append(p)
             results = []
             for e in entries:
+                uid = self._resolve_player(e["player_uid"], players, uid_map, by_name)
                 r = await self._record_one(
-                    conn, rule, e["player_uid"], e["match_date"],
+                    conn, rule, uid, e["match_date"],
                     e.get("opponent", ""), e["stats"], created_by, period_no,
                 )
                 results.append(r)
@@ -258,6 +268,31 @@ class GrowthService:
 
         results = await self._db.execute_transaction(_tx)
         return {"ok": len(results), "errors": [], "results": results}
+
+    def _resolve_player(self, ref: str, players: list, uid_map: dict, by_name: dict) -> str:
+        """解析比赛导入中的球员引用：先按 UID 精确匹配，再按姓名匹配（含容错）。
+
+        姓名匹配：归一化（小写去分隔符）精确优先；否则长度分级编辑距离容错
+        （<4 字符仅精确；4~9 允许 1 处；≥10 允许 2 处）。命中多个报错提示用球员ID。
+        """
+        from ..utils.security import name_similar, normalize_name
+
+        hit = uid_map.get(ref)
+        if hit is not None:
+            return hit["player_uid"]
+        exact = by_name.get(normalize_name(ref))
+        if exact:
+            if len(exact) > 1:
+                names = "、".join(p["name"] for p in exact)
+                raise ValueError(f"存在多个同名球员（{names}），请使用球员ID")
+            return exact[0]["player_uid"]
+        fuzzy = [p for p in players if name_similar(p["name"], ref)]
+        if len(fuzzy) > 1:
+            names = "、".join(p["name"] for p in fuzzy)
+            raise ValueError(f"存在多个相近球员（{names}），请使用球员ID")
+        if fuzzy:
+            return fuzzy[0]["player_uid"]
+        raise ValueError(f"未找到球员: {ref}（可用 /成长球员 查看名单）")
     # ─── 成长期推进 ────────────────────────────────────────
 
     async def advance_period(self, new_name: str, carryover: bool) -> dict:

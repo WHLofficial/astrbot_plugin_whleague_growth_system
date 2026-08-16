@@ -80,3 +80,45 @@ def parse_date(raw: str) -> str:
     except ValueError as e:
         raise ValueError(f"非法日期: {raw}") from e
     return f"{y:04d}-{mo:02d}-{d:02d}"
+
+
+def normalize_name(text: str) -> str:
+    """姓名归一化：小写并去除分隔符（空白/连字符/撇号等），用于匹配。
+
+    保留字母数字与 CJK 字符，其余（空格、-、'、. 等）全部移除，
+    使 "Van Dijk" / "vandijk" / "van-dijk" / "van Dijk" 归一到同一键。
+    """
+    return re.sub(r"[^a-z0-9\u4e00-\u9fff]", "", str(text or "").lower())
+
+
+def _edit_distance(a: str, b: str) -> int:
+    """编辑距离（DP）：姓名较短，O(m*n) 足够。"""
+    m, n = len(a), len(b)
+    if m == 0:
+        return n
+    if n == 0:
+        return m
+    prev = list(range(n + 1))
+    for i in range(1, m + 1):
+        cur = [i] + [0] * n
+        for j in range(1, n + 1):
+            cost = 0 if a[i - 1] == b[j - 1] else 1
+            cur[j] = min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost)
+        prev = cur
+    return prev[n]
+
+
+def name_similar(a: str, b: str) -> bool:
+    """姓名相似度（容错匹配）：先归一化，再按归一化长度分级允许编辑距离。
+
+    长度 <4 仅精确匹配（防 2 字名误配）；4~9 允许 1 处字母差异；≥10 允许 2 处。
+    """
+    x, y = normalize_name(a), normalize_name(b)
+    if not x or not y:
+        return False
+    if x == y:
+        return True
+    if len(x) < 4 or len(y) < 4:
+        return False
+    limit = 2 if (len(x) >= 10 or len(y) >= 10) else 1
+    return _edit_distance(x, y) <= limit

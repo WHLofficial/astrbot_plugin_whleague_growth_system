@@ -136,5 +136,23 @@
     "hint": "imports 目录最多保留的文件数，超限自动删除最旧文件。",
     "type": "int",
     "default": 50
+  },
+  "forward_threshold": {
+    "description": "反馈转转发卡片阈值（行数）",
+    "hint": "命令反馈纯文本行数达到该值时自动转为QQ合并转发卡片（列表类反馈如排行/球员名单在手机QQ上一屏装不下会刷屏）；设为 0 关闭。",
+    "type": "int",
+    "default": 8
+  },
+  "forward_node_max_chars": {
+    "description": "转发卡片单节点最大字符数",
+    "hint": "多行反馈转卡片时，每条转发节点承载的字符数上限（不拆断单行）。",
+    "type": "int",
+    "default": 1500
+  },
+  "forward_max_nodes": {
+    "description": "转发卡片最大节点数",
+    "hint": "多行反馈转卡片时节点数上限，超出截断并提示用 /成长导出 获取完整数据。",
+    "type": "int",
+    "default": 50
   }
 }

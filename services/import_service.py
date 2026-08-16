@@ -211,6 +211,7 @@ class GrowthImportService:
 
         首行若在日期/球员列位上有值且其余列有匹配规则数据项（键或显示名），视为表头；
         数据行解析后无任何有效数据列则记入错误，不生成 0 经验记录。
+        球员列可填球员 ID 或球员姓名（导入时自动匹配，见 growth_service._resolve_player）。
         """
         rows = self._read_rows(file_path)
         col_date = self._col("import_col_match_date")
@@ -246,7 +247,7 @@ class GrowthImportService:
             uid_raw = _cell_to_str(row[col_uid - 1]) if 0 < col_uid <= len(row) else ""
             uid = sanitize_uid(uid_raw)
             if not uid:
-                errors.append(f"第{idx}行: 球员 ID 为空或非法")
+                errors.append(f"第{idx}行: 球员 ID/姓名 为空或非法")
                 continue
             try:
                 from ..utils.security import parse_date

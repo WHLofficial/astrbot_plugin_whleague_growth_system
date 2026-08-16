@@ -191,6 +191,12 @@ class GrowthDAO:
         ) as cur:
             return await cur.fetchall()
 
+    async def list_all_active_players_conn(self, conn) -> list:
+        async with conn.execute(
+            "SELECT player_uid, name, team FROM players WHERE active=1 ORDER BY player_uid"
+        ) as cur:
+            return await cur.fetchall()
+
     # ─── matches / appearances / stats ─────────────────────
 
     async def get_match(self, conn, match_date: str, opponent: str):

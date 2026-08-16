@@ -20,6 +20,7 @@ from .db.schema import init_schema
 from .services.export_service import ExportService
 from .services.growth_service import GrowthService
 from .services.import_service import GrowthImportService
+from .utils.forward import maybe_forward_result
 
 
 def _is_group_allowed(cfg, group_id) -> bool:
@@ -77,6 +78,20 @@ class GrowthSystemPlugin(Star):
         else:
             await self.dao.set_config(key, str(value))
 
+    def _maybe_forward(self, event, result: MessageEventResult) -> MessageEventResult:
+        """纯文本反馈行数达到阈值时自动转 QQ 合并转发卡片（防刷屏，取配置）。"""
+        try:
+            line_threshold = int(self.config_cache.get("forward_threshold", 0) or 0)
+            node_max = int(self.config_cache.get("forward_node_max_chars", 1500) or 1500)
+            max_nodes = int(self.config_cache.get("forward_max_nodes", 50) or 50)
+        except (TypeError, ValueError):
+            line_threshold, node_max, max_nodes = 0, 1500, 50
+        if node_max < 1:
+            node_max = 1500
+        if max_nodes < 1:
+            max_nodes = 50
+        return maybe_forward_result(event, result, line_threshold, node_max, max_nodes)
+
     # ═══════════════════════════════════════════════════════
     # 玩家命令（只读）
     # ═══════════════════════════════════════════════════════
@@ -87,49 +102,49 @@ class GrowthSystemPlugin(Star):
             return
         is_admin = await self.admin_handler._is_admin(event)
         async for r in self.player_handler.help(event, is_admin):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长规则")
     async def cmd_show_rule(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.player_handler.show_rule(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长查询")
     async def cmd_query(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.player_handler.query_player(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长排行")
     async def cmd_rank(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.player_handler.rank(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长球员")
     async def cmd_list_players(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.player_handler.list_players(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长期状态")
     async def cmd_period_status(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.player_handler.period_status(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长预览")
     async def cmd_preview(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.player_handler.preview(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长导入列表")
     async def cmd_import_list(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
@@ -137,10 +152,10 @@ class GrowthSystemPlugin(Star):
             return
         if not await self.admin_handler._is_admin(event):
             async for r in self.admin_handler._deny(event):
-                yield r
+                yield self._maybe_forward(event, r)
             return
         async for r in self.admin_handler.import_list(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     # ═══════════════════════════════════════════════════════
     # 管理命令
@@ -151,49 +166,49 @@ class GrowthSystemPlugin(Star):
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.admin_handler.record(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长推进")
     async def cmd_advance(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.admin_handler.advance(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长导出")
     async def cmd_export(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.admin_handler.export(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长导入文件")
     async def cmd_import_file(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.admin_handler.import_file(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长确认导入")
     async def cmd_confirm_import(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.admin_handler.confirm_import(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长设置")
     async def cmd_set_config(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.admin_handler.set_config(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     @filter.command("成长查看配置")
     async def cmd_view_config(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
         if not _is_group_allowed(self.config_cache, event.get_group_id()):
             return
         async for r in self.admin_handler.view_config(event):
-            yield r
+            yield self._maybe_forward(event, r)
 
     # ═══════════════════════════════════════════════════════
     # 群文件捕获（规则_ / 球员_ / 比赛_ 自动识别并预览）

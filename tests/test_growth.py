@@ -1688,3 +1688,439 @@ def test_parse_rule_table_cfg_callable():
     assert rule["stats"]["appearance"]["xp"] == 1.0
     assert rule["stats"]["rating"]["bands"][0]["min"] == 7.0
     assert rule["level_xp"] == 100.0
+
+
+# ─── 比赛导入姓名匹配 + 长反馈转发卡片（v0.6.0）────────────
+
+def _players_rule():
+    return {"stats": {"goal": {"name": "进球", "xp": 10}}, "milestones": [], "level_xp": 100}
+
+
+async def _add_players(service, dao, *rows):
+    async def _tx(conn):
+        for uid, name, team in rows:
+            await dao.upsert_player(conn, uid, name, team, "admin")
+    await service._db.execute_transaction(_tx)
+
+
+def _matches_rule():
+    return parse_rule_json(json.dumps(_players_rule()), 100)
+
+
+def test_match_import_by_name():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await service.save_rule(_matches_rule(), "test", "admin")
+            await _add_players(service, dao, ("p01", "球员一", "A队"))
+            r = await service.record_match_batch(
+                [{"player_uid": "球员一", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 2}}],
+                "admin",
+            )
+            assert r["ok"] == 1
+            p = await dao.get_player("p01")
+            assert p["xp"] == 20.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_import_mixed_uid_name():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await service.save_rule(_matches_rule(), "test", "admin")
+            await _add_players(service, dao, ("p01", "球员一", "A队"), ("p02", "球员二", "B队"))
+            r = await service.record_match_batch(
+                [
+                    {"player_uid": "p01", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 2}},
+                    {"player_uid": "球员二", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 3}},
+                ],
+                "admin",
+            )
+            assert r["ok"] == 2
+            p1 = await dao.get_player("p01")
+            p2 = await dao.get_player("p02")
+            assert p1["xp"] == 20.0 and p2["xp"] == 30.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_import_normalized_name():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await service.save_rule(_matches_rule(), "test", "admin")
+            await _add_players(service, dao, ("p01", "Van Dijk", "A队"))
+            # 内部缺空格 / 连字符写法都能命中（不同日期避免同场覆盖）
+            for i, ref in enumerate(("vanDijk", "van-dijk", "VAN DIJK")):
+                r = await service.record_match_batch(
+                    [{"player_uid": ref, "match_date": f"2026-08-{1 + i * 7:02d}", "opponent": "", "stats": {"goal": 1}}],
+                    "admin",
+                )
+                assert r["ok"] == 1, ref
+            p = await dao.get_player("p01")
+            assert p["xp"] == 30.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_import_fuzzy_typo():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await service.save_rule(_matches_rule(), "test", "admin")
+            await _add_players(service, dao, ("p01", "Van Dijk", "A队"))
+            # 1 处字母差异（4~9 字符允许 1 处）
+            r = await service.record_match_batch(
+                [{"player_uid": "Vam Dijk", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 1}}],
+                "admin",
+            )
+            assert r["ok"] == 1
+            p = await dao.get_player("p01")
+            assert p["xp"] == 10.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_import_short_name_no_fuzzy():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await service.save_rule(_matches_rule(), "test", "admin")
+            await _add_players(service, dao, ("p01", "张三", "A队"))
+            with pytest.raises(ValueError) as e:
+                await service.record_match_batch(
+                    [{"player_uid": "张四", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 1}}],
+                    "admin",
+                )
+            assert "未找到球员" in str(e.value)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_import_duplicate_name():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await service.save_rule(_matches_rule(), "test", "admin")
+            await _add_players(service, dao, ("p01", "球员一", "A队"), ("p02", "球员一", "B队"))
+            with pytest.raises(ValueError) as e:
+                await service.record_match_batch(
+                    [{"player_uid": "球员一", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 1}}],
+                    "admin",
+                )
+            assert "存在多个同名球员" in str(e.value) and "请使用球员ID" in str(e.value)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_import_fuzzy_multiple():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await service.save_rule(_matches_rule(), "test", "admin")
+            await _add_players(service, dao, ("p01", "Van Dijk", "A队"), ("p02", "Vam Dik", "B队"))
+            # "Van Dik" 与两人（vandijk / vamdik）都只差 1 处 → 多个相近球员，报错提示用 ID
+            with pytest.raises(ValueError) as e:
+                await service.record_match_batch(
+                    [{"player_uid": "Van Dik", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 1}}],
+                    "admin",
+                )
+            assert "存在多个相近球员" in str(e.value) and "请使用球员ID" in str(e.value)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_import_not_found():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await service.save_rule(_matches_rule(), "test", "admin")
+            await _add_players(service, dao, ("p01", "球员一", "A队"))
+            with pytest.raises(ValueError) as e:
+                await service.record_match_batch(
+                    [{"player_uid": "不存在的名字", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 1}}],
+                    "admin",
+                )
+            assert "未找到球员" in str(e.value) and "/成长球员" in str(e.value)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_matches_parse_name_not_rejected():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            rule = _matches_rule()
+            file_path = os.path.join(tmp, "比赛_姓名.csv")
+            with open(file_path, "w", encoding="utf-8") as f:
+                f.write("日期,球员,进球\n2026-08-01,球员一,2\n")
+            entries, errors, skipped = imp.parse_matches_file(file_path, rule)
+            assert len(entries) == 1 and entries[0]["player_uid"] == "球员一"
+            assert errors == []
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_chunk_lines_basic():
+    from astrbot_plugin_whleague_growth_system.utils.forward import chunk_lines
+
+    text = "\n".join(f"第{i}行内容" for i in range(10))
+    chunks = chunk_lines(text, 30)
+    assert "".join(chunks) == text.replace("\n", "\n")  # 内容不丢失
+    assert all(len(c) <= 30 for c in chunks)
+    # 单行超限按字符拆
+    long_line = "x" * 100
+    chunks2 = chunk_lines(long_line, 30)
+    assert chunks2 == ["x" * 30, "x" * 30, "x" * 30, "x" * 10]
+    # 空串
+    assert chunk_lines("", 30) == []
+
+
+def test_maybe_forward_short_passthrough():
+    import astrbot_plugin_whleague_growth_system.utils.forward as fwd
+
+    class _P:
+        def __init__(self, text):
+            self.text = text
+
+    fwd.Plain = _P
+
+    class _Result:
+        def __init__(self, chain):
+            self.chain = chain
+
+        def use_t2i(self, v):
+            self.use_t2i_ = v
+            return self
+
+    class _Event:
+        def get_self_id(self):
+            return "10001"
+
+        def chain_result(self, chain):
+            return _Result(chain)
+
+    ev = _Event()
+    r = _Result([_P("短文本")])
+    out = fwd.maybe_forward_result(ev, r, 8, 1500, 50)
+    assert out is r  # 行数不足阈值原样返回
+
+
+def test_count_lines():
+    from astrbot_plugin_whleague_growth_system.utils.forward import count_lines
+
+    assert count_lines("") == 0
+    assert count_lines("单行") == 1
+    assert count_lines("a\nb") == 2
+    assert count_lines("a\nb\n") == 3  # 尾部换行也计一行
+    assert count_lines("\n".join(range(0))) == 0
+
+
+def test_maybe_forward_long_card(monkeypatch):
+    import astrbot_plugin_whleague_growth_system.utils.forward as fwd
+
+    class _P:
+        def __init__(self, text):
+            self.text = text
+
+    class _Node:
+        def __init__(self, *a, **k):
+            self.kwargs = k
+
+    class _Nodes:
+        def __init__(self, nodes=None, **k):
+            self.nodes = nodes or []
+
+    monkeypatch.setattr(fwd, "Plain", _P)
+    monkeypatch.setattr(fwd, "Node", _Node)
+    monkeypatch.setattr(fwd, "Nodes", _Nodes)
+
+    class _Result:
+        def __init__(self, chain):
+            self.chain = chain
+
+        def use_t2i(self, v):
+            self.use_t2i_ = v
+            return self
+
+    class _Event:
+        def get_self_id(self):
+            return "10001"
+
+        def chain_result(self, chain):
+            return _Result(chain)
+
+    ev = _Event()
+    long_text = "\n".join(f"第{i}行内容" for i in range(20))  # 20 行
+    r = _Result([_P(long_text)])
+    out = fwd.maybe_forward_result(ev, r, 8, 1500, 50)
+    assert out is not r
+    assert isinstance(out.chain[0], _Nodes)
+    assert len(out.chain[0].nodes) == 1  # 20 行每行短，聚合成 1 个节点
+    assert out.use_t2i_ is False
+    # 节点内容可完整还原（不含尾部换行）
+    total = "".join(n.kwargs["content"][0].text for n in out.chain[0].nodes)
+    assert total == long_text
+
+
+def test_maybe_forward_few_lines_skip(monkeypatch):
+    """单行超长文本（字符多但行数 < 阈值）不转卡片——触发条件是行数而非字符数。"""
+    import astrbot_plugin_whleague_growth_system.utils.forward as fwd
+
+    class _P:
+        def __init__(self, text):
+            self.text = text
+
+    monkeypatch.setattr(fwd, "Plain", _P)
+
+    class _Result:
+        def __init__(self, chain):
+            self.chain = chain
+
+        def use_t2i(self, v):
+            return self
+
+    class _Event:
+        def get_self_id(self):
+            return "10001"
+
+        def chain_result(self, chain):
+            return _Result(chain)
+
+    ev = _Event()
+    r = _Result([_P("x" * 5000)])  # 1 行 5000 字符
+    out = fwd.maybe_forward_result(ev, r, 8, 1500, 50)
+    assert out is r
+
+
+def test_maybe_forward_truncate(monkeypatch):
+    import astrbot_plugin_whleague_growth_system.utils.forward as fwd
+
+    class _P:
+        def __init__(self, text):
+            self.text = text
+
+    class _Node:
+        def __init__(self, *a, **k):
+            self.kwargs = k
+
+    class _Nodes:
+        def __init__(self, nodes=None, **k):
+            self.nodes = nodes or []
+
+    monkeypatch.setattr(fwd, "Plain", _P)
+    monkeypatch.setattr(fwd, "Node", _Node)
+    monkeypatch.setattr(fwd, "Nodes", _Nodes)
+
+    class _Result:
+        def __init__(self, chain):
+            self.chain = chain
+
+        def use_t2i(self, v):
+            self.use_t2i_ = v
+            return self
+
+    class _Event:
+        def get_self_id(self):
+            return "10001"
+
+        def chain_result(self, chain):
+            return _Result(chain)
+
+    ev = _Event()
+    r = _Result([_P("\n".join(f"第{i}行" for i in range(100)))])
+    out = fwd.maybe_forward_result(ev, r, 8, 20, 2)
+    nodes = out.chain[0].nodes
+    assert len(nodes) == 2
+    assert "其余省略" in nodes[-1].kwargs["content"][0].text
+
+
+def test_maybe_forward_nonplain_skip(monkeypatch):
+    import astrbot_plugin_whleague_growth_system.utils.forward as fwd
+
+    class _P:
+        def __init__(self, text):
+            self.text = text
+
+    monkeypatch.setattr(fwd, "Plain", _P)
+
+    class _Result:
+        def __init__(self, chain):
+            self.chain = chain
+
+        def use_t2i(self, v):
+            return self
+
+    class _Event:
+        def get_self_id(self):
+            return "10001"
+
+        def chain_result(self, chain):
+            return _Result(chain)
+
+    ev = _Event()
+    # 含非纯文本组件（如文件消息段）→ 不转卡片
+    r = _Result([_P("x\n" * 100), object()])
+    out = fwd.maybe_forward_result(ev, r, 8, 1500, 50)
+    assert out is r
+
+
+def test_plugin_maybe_forward_threshold_disabled(monkeypatch):
+    import types
+
+    import astrbot_plugin_whleague_growth_system.main as main_mod
+    import astrbot_plugin_whleague_growth_system.utils.forward as fwd
+
+    class _P:
+        def __init__(self, text):
+            self.text = text
+
+    class _Node:
+        def __init__(self, *a, **k):
+            self.kwargs = k
+
+    class _Nodes:
+        def __init__(self, nodes=None, **k):
+            self.nodes = nodes or []
+
+    monkeypatch.setattr(fwd, "Plain", _P)
+    monkeypatch.setattr(fwd, "Node", _Node)
+    monkeypatch.setattr(fwd, "Nodes", _Nodes)
+
+    class _Result:
+        def __init__(self, chain):
+            self.chain = chain
+
+        def use_t2i(self, v):
+            return self
+
+    class _Event:
+        def get_self_id(self):
+            return "10001"
+
+        def chain_result(self, chain):
+            return _Result(chain)
+
+    cfg = dict(DEFAULT_CONFIG)
+    cfg["forward_threshold"] = 0  # 关闭
+    plugin = types.SimpleNamespace(config_cache=cfg)
+    ev = _Event()
+    r = _Result([_P("\n".join(f"行{i}" for i in range(20)))])
+    out = main_mod.GrowthSystemPlugin._maybe_forward(plugin, ev, r)
+    assert out is r
+    # 打开且行数超阈值 → 转卡片
+    cfg["forward_threshold"] = 8
+    out2 = main_mod.GrowthSystemPlugin._maybe_forward(plugin, ev, r)
+    assert out2 is not r
+
+

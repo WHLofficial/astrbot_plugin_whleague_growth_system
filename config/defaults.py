@@ -3,7 +3,7 @@
 import json
 import os
 
-PLUGIN_VERSION = "0.5.1"
+PLUGIN_VERSION = "0.6.0"
 """插件版本号，与 metadata.yaml 保持一致。"""
 
 _SCHEMA_PATH = os.path.join(
@@ -69,6 +69,9 @@ _INT_UPPER_BOUNDS = {
     "import_batch_size": 100_000,
     "import_max_file_size_mb": 1024,
     "import_max_files": 10_000,
+    "forward_threshold": 1_000,
+    "forward_node_max_chars": 5_000,
+    "forward_max_nodes": 200,
 }
 
 # 整数配置业务下限
@@ -91,6 +94,9 @@ _INT_LOWER_BOUNDS = {
     "import_batch_size": 1,
     "import_max_file_size_mb": 1,
     "import_max_files": 1,
+    "forward_threshold": 0,
+    "forward_node_max_chars": 100,
+    "forward_max_nodes": 1,
 }
 
 # 浮点配置的允许区间（闭区间）

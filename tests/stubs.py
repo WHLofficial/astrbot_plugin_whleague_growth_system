@@ -56,6 +56,8 @@ def install_stubs():
     mc_pkg = types.ModuleType("astrbot.api.message_components")
     mc_pkg.File = object
     mc_pkg.Plain = object
+    mc_pkg.Node = object
+    mc_pkg.Nodes = object
     sys.modules["astrbot.api.message_components"] = mc_pkg
 
     sys.modules["astrbot"] = astrbot_pkg
