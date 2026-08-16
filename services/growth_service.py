@@ -101,6 +101,9 @@ class GrowthService:
 
         old = await self._dao.get_appearance(conn, match_id, player_uid)
         old_stat_xp = round(float(old["stat_xp"]), 1) if old else 0.0
+        # 单场达标奖励随出场记录持久化（bonus_xp 列）：覆盖时回退旧值，
+        # 读取存储值而非重算，保证与当时规则冻结一致（改规则后重录仍正确回收）
+        old_match_bonus = round(float(old["bonus_xp"]), 1) if old else 0.0
 
         stat_xp = 0.0
         for key, value in stats.items():
@@ -115,9 +118,11 @@ class GrowthService:
             else:
                 stat_xp += round(float(value) * meta["xp"], 1)
         stat_xp = round(stat_xp, 1)
+        match_bonus = self._match_bonus(rule, stats)
 
         appearance_id = await self._dao.upsert_appearance(
-            conn, match_id, player_uid, period_no, stat_xp, 0, stat_xp, created_by
+            conn, match_id, player_uid, period_no, stat_xp, match_bonus,
+            round(stat_xp + match_bonus, 1), created_by,
         )
         await self._dao.delete_appearance_stats(conn, appearance_id)
         for key, value in stats.items():
@@ -127,7 +132,34 @@ class GrowthService:
         bonus = 0.0
         awarded = []
         for m in rule["milestones"]:
+            if m["period"] == "match":
+                # 单场达标：基于本次上报数据值，达标即奖励（每场判断，天然幂等）
+                value = float(stats.get(m["stat"], 0.0))
+                if value >= m["threshold"]:
+                    bonus = round(bonus + m["xp"], 1)
+                    awarded.append({**m, "value": value})
+                continue
             pno = period_no if m["period"] == "period" else 0
+            if "stat_keys" in m:
+                # 多数据项总和里程碑：各项累计值之和，一次性颁发（stat_key 存排序后逗号串）
+                total = await self._dao.sum_stat_values(
+                    conn, player_uid, m["stat_keys"],
+                    period_no if m["period"] == "period" else None,
+                )
+                stat_key = ",".join(m["stat_keys"])
+                existing = await self._dao.get_award(
+                    conn, player_uid, m["period"], stat_key, m["threshold"], pno
+                )
+                if existing:
+                    continue
+                if total >= m["threshold"]:
+                    await self._dao.insert_award(
+                        conn, player_uid, pno, m["period"], stat_key,
+                        m["threshold"], m["xp"], match_id,
+                    )
+                    bonus = round(bonus + m["xp"], 1)
+                    awarded.append(m)
+                continue
             total = await self._dao.sum_stat_value(
                 conn, player_uid, m["stat"],
                 period_no if m["period"] == "period" else None,
@@ -163,7 +195,7 @@ class GrowthService:
                     bonus = round(bonus + m["xp"], 1)
                     awarded.append(m)
 
-        delta = round((stat_xp + bonus) - old_stat_xp, 1)
+        delta = round((stat_xp + bonus) - (old_stat_xp + old_match_bonus), 1)
         level = int(player["level"])
         xp = max(0.0, round(float(player["xp"]) + delta, 1))
         xp_total = max(0.0, round(float(player["xp_total"]) + delta, 1))
@@ -175,6 +207,7 @@ class GrowthService:
             "match_date": match_date,
             "opponent": opponent,
             "stat_xp": stat_xp,
+            "match_bonus": match_bonus,
             "bonus_xp": bonus,
             "total_xp": round(stat_xp + bonus, 1),
             "awarded": awarded,
@@ -182,6 +215,16 @@ class GrowthService:
             "xp": xp,
             "xp_total": xp_total,
         }
+
+    def _match_bonus(self, rule: dict, stats: dict) -> float:
+        """单场达标额外经验合计（period=match 的里程碑，基于单场数据值）。"""
+        total = 0.0
+        for m in rule["milestones"]:
+            if m.get("period") != "match":
+                continue
+            if float(stats.get(m["stat"], 0.0)) >= m["threshold"]:
+                total = round(total + m["xp"], 1)
+        return total
 
     async def record_match_batch(self, entries: list, created_by: str) -> dict:
         """批量录入（文件导入），整个批次一个事务，失败整体回滚。

@@ -1236,3 +1236,376 @@ def test_preview_handler_output():
         _run_async(_run())
     finally:
         asyncio.run(env["db"].close())
+
+
+# ─── 多数据项总和里程碑 + 单场达标奖励（v0.5.0）────────────
+
+def _multikey_rule():
+    return {
+        "stats": {
+            "goal": {"name": "进球", "xp": 10},
+            "assist": {"name": "助攻", "xp": 5},
+            "rating": {"name": "评分", "xp": 1},
+        },
+        "milestones": [
+            {"stats": ["goal", "assist"], "period": "period", "threshold": 10, "xp": 50},
+            {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 10},
+        ],
+        "level_xp": 100,
+    }
+
+
+def _saved_rule(rule: dict) -> dict:
+    """规范化并保存：save_rule 原样入库，须与生产流程一致先经 normalize。"""
+    return parse_rule_json(json.dumps(rule), 100)
+
+
+def test_parse_rule_multikey_stats_array():
+    rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+    m = rule["milestones"][0]
+    assert m["stat_keys"] == ["assist", "goal"]  # 排序去重
+    assert m["period"] == "period" and m["threshold"] == 10 and m["xp"] == 50
+
+
+def test_parse_rule_multikey_comma_stat():
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stat": "goal,assist", "period": "period", "threshold": 10, "xp": 50}
+    ]
+    rule = parse_rule_json(json.dumps(data), 100)
+    assert rule["milestones"][0]["stat_keys"] == ["assist", "goal"]
+
+
+def test_parse_rule_multikey_conflict():
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stat": "goal", "stats": ["goal", "assist"], "period": "period",
+         "threshold": 10, "xp": 50}
+    ]
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(data), 100)
+
+
+def test_parse_rule_multikey_unknown_stat():
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stats": ["goal", "nope"], "period": "period", "threshold": 10, "xp": 50}
+    ]
+    with pytest.raises(RuleError) as e:
+        parse_rule_json(json.dumps(data), 100)
+    assert "nope" in str(e.value)
+
+
+def test_parse_rule_multikey_bands_stat_rejected():
+    rule = _bands_rule()
+    rule["milestones"] = [
+        {"stats": ["goal", "rating"], "period": "period", "threshold": 10, "xp": 50}
+    ]
+    with pytest.raises(RuleError) as e:
+        parse_rule_json(json.dumps(rule), 100)
+    assert "rating" in str(e.value)
+
+
+def test_parse_rule_multikey_repeat_rejected():
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stats": ["goal", "assist"], "period": "period", "step": 10, "xp": 50}
+    ]
+    with pytest.raises(RuleError) as e:
+        parse_rule_json(json.dumps(data), 100)
+    assert "多数据项总和暂不支持" in str(e.value)
+
+
+def test_parse_rule_multikey_duplicate():
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stats": ["assist", "goal"], "period": "period", "threshold": 10, "xp": 50},
+        {"stats": ["goal", "assist"], "period": "period", "threshold": 10, "xp": 50},
+    ]
+    with pytest.raises(RuleError) as e:
+        parse_rule_json(json.dumps(data), 100)
+    assert "重复定义" in str(e.value)
+
+
+def test_parse_rule_multikey_dedupe_and_empty():
+    # 重复 key 去重后剩单 key → 归一化为普通单数据项里程碑
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stats": ["goal", "goal"], "period": "period", "threshold": 10, "xp": 50}
+    ]
+    rule = parse_rule_json(json.dumps(data), 100)
+    m = rule["milestones"][0]
+    assert "stat_keys" not in m and m["stat"] == "goal"
+    # 仅逗号的 stat 报干净错误而非崩溃
+    data["milestones"] = [{"stat": ",", "period": "period", "threshold": 10, "xp": 50}]
+    with pytest.raises(RuleError) as e:
+        parse_rule_json(json.dumps(data), 100)
+    assert "缺少数据项 stat" in str(e.value)
+
+
+def test_parse_rule_table_multikey_comma():
+    rows = [
+        ["type", "stat", "name", "xp", "period", "threshold"],
+        ["stat", "goal", "进球", "10", "", ""],
+        ["stat", "assist", "助攻", "5", "", ""],
+        ["milestone", "goal,assist", "", "50", "period", "10"],
+    ]
+    rule = parse_rule_table(rows, DEFAULT_CONFIG, 100)
+    m = [x for x in rule["milestones"] if "stat_keys" in x][0]
+    assert m["stat_keys"] == ["assist", "goal"]
+    assert m["threshold"] == 10 and m["xp"] == 50
+
+
+def test_parse_rule_match_ok():
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 10}
+    ]
+    rule = parse_rule_json(json.dumps(data), 100)
+    m = rule["milestones"][0]
+    assert m["period"] == "match" and m["stat"] == "rating"
+    assert m["threshold"] == 9.0
+
+
+def test_parse_rule_match_bands_ok():
+    rule = _bands_rule()
+    rule["milestones"] = [
+        {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 15}
+    ]
+    r = parse_rule_json(json.dumps(rule), 100)
+    assert r["milestones"][0]["period"] == "match"
+
+
+def test_parse_rule_match_repeat_rejected():
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stat": "rating", "period": "match", "step": 3, "xp": 10}
+    ]
+    with pytest.raises(RuleError) as e:
+        parse_rule_json(json.dumps(data), 100)
+    assert "单场达标" in str(e.value)
+
+
+def test_parse_rule_match_multikey_rejected():
+    data = _multikey_rule()
+    data["milestones"] = [
+        {"stats": ["goal", "assist"], "period": "match", "threshold": 10, "xp": 50}
+    ]
+    with pytest.raises(RuleError) as e:
+        parse_rule_json(json.dumps(data), 100)
+    assert "仅支持单个数据项" in str(e.value)
+
+
+def test_parse_rule_table_match_period():
+    rows = [
+        ["type", "stat", "name", "xp", "period", "threshold"],
+        ["stat", "rating", "评分", "1", "", ""],
+        ["milestone", "rating", "", "10", "match", "9"],
+    ]
+    rule = parse_rule_table(rows, DEFAULT_CONFIG, 100)
+    m = rule["milestones"][0]
+    assert m["period"] == "match" and m["threshold"] == 9.0
+
+
+def test_format_rule_multikey_and_match():
+    rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+    text = format_rule(rule)
+    assert "助攻+进球" in text and "累计合计达 10" in text
+    assert "评分 单场达 9" in text and "额外 10 经验" in text
+
+
+def test_multikey_milestone_calc_and_idempotent():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+            # 移除 match 里程碑，仅测多 key 累计
+            rule["milestones"] = [
+                {"stats": ["goal", "assist"], "period": "period", "threshold": 10, "xp": 50}
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            r1 = await service.record_match("p01", "2026-08-01", "", {"goal": 5, "assist": 3}, "admin")
+            # 5+3=8 <10，未触发；数据经验 5*10+3*5=65
+            assert r1["bonus_xp"] == 0
+            r2 = await service.record_match("p01", "2026-08-08", "", {"goal": 2, "assist": 4}, "admin")
+            # 累计 14 ≥10 → +50；数据经验 2*10+4*5=40
+            assert r2["bonus_xp"] == 50
+            assert len(r2["awarded"]) == 1
+            p = await dao.get_player("p01")
+            assert p["xp"] == 65 + 40 + 50
+            r3 = await service.record_match("p01", "2026-08-15", "", {"goal": 1, "assist": 1}, "admin")
+            assert r3["bonus_xp"] == 0  # 已颁发，不重复
+            p = await dao.get_player("p01")
+            assert p["xp"] == 65 + 40 + 50 + 15  # r3 数据经验 1*10+1*5=15
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_multikey_milestone_career():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+            rule["milestones"] = [
+                {"stats": ["goal", "assist"], "period": "career", "threshold": 50, "xp": 100}
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            await service.record_match("p01", "2026-08-01", "", {"goal": 30, "assist": 10}, "admin")
+            # 数据经验 30*10+10*5=350；合计 40 <50
+            await service.advance_period("成长期2", True)
+            r = await service.record_match("p01", "2026-09-01", "", {"goal": 10, "assist": 5}, "admin")
+            # 跨期合计 55 ≥50 → 生涯奖励 +100；数据经验 10*10+5*5=125
+            assert r["bonus_xp"] == 100
+            p = await dao.get_player("p01")
+            assert p["xp_total"] == 350 + 125 + 100
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_bonus_triggers():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+            rule["milestones"] = [
+                {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 10}
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            r = await service.record_match("p01", "2026-08-01", "", {"rating": 9.5, "goal": 2}, "admin")
+            # 数据经验 9.5*1+2*10=29.5；单场达标 +10
+            assert r["match_bonus"] == 10.0
+            assert r["bonus_xp"] == 10.0
+            assert r["total_xp"] == 39.5
+            assert len(r["awarded"]) == 1
+            p = await dao.get_player("p01")
+            assert p["xp"] == 39.5
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_bonus_not_reached():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+            rule["milestones"] = [
+                {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 10}
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            r = await service.record_match("p01", "2026-08-01", "", {"rating": 8.5}, "admin")
+            assert r["match_bonus"] == 0.0
+            assert r["awarded"] == []
+            p = await dao.get_player("p01")
+            assert p["xp"] == 8.5
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_bonus_multiple_accumulate():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+            rule["milestones"] = [
+                {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 10},
+                {"stat": "rating", "period": "match", "threshold": 9.5, "xp": 20},
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            r = await service.record_match("p01", "2026-08-01", "", {"rating": 9.8}, "admin")
+            # 两条同时达标 → 全部累加
+            assert r["match_bonus"] == 30.0
+            assert len(r["awarded"]) == 2
+            p = await dao.get_player("p01")
+            assert p["xp"] == 9.8 + 30.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_bonus_overwrite_recovery():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+            rule["milestones"] = [
+                {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 10}
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            r1 = await service.record_match("p01", "2026-08-01", "", {"rating": 9.8}, "admin")
+            assert r1["xp"] == 19.8
+            # 覆盖为不达标：回收旧单场奖励
+            r2 = await service.record_match("p01", "2026-08-01", "", {"rating": 8.0}, "admin")
+            assert r2["match_bonus"] == 0.0
+            assert r2["xp"] == 8.0
+            # 再覆盖为达标：补发
+            r3 = await service.record_match("p01", "2026-08-01", "", {"rating": 9.7}, "admin")
+            assert r3["match_bonus"] == 10.0
+            assert r3["xp"] == 19.7
+            p = await dao.get_player("p01")
+            assert p["xp"] == 19.7
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_bonus_overwrite_after_rule_change():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = parse_rule_json(json.dumps(_multikey_rule()), 100)
+            rule["milestones"] = [
+                {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 10}
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            r1 = await service.record_match("p01", "2026-08-01", "", {"rating": 9.5}, "admin")
+            assert r1["xp"] == 19.5  # 含旧规则单场奖励 +10
+            # 改规则：阈值 9.0 → 9.8，奖励 10 → 20
+            rule["milestones"] = [
+                {"stat": "rating", "period": "match", "threshold": 9.8, "xp": 20}
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            r2 = await service.record_match("p01", "2026-08-01", "", {"rating": 9.6}, "admin")
+            # 旧奖励按存储值回收（10），新规则 9.6<9.8 不触发 → xp=9.6
+            assert r2["match_bonus"] == 0.0
+            assert r2["xp"] == 9.6
+            p = await dao.get_player("p01")
+            assert p["xp"] == 9.6
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_match_bonus_bands_stat():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = _bands_rule()
+            rule["milestones"] = [
+                {"stat": "rating", "period": "match", "threshold": 9.0, "xp": 15}
+            ]
+            await service.save_rule(_saved_rule(rule), "test", "admin")
+            r = await service.record_match("p01", "2026-08-01", "", {"rating": 9.5}, "admin")
+            # bands [8~)+20 + 单场达标 15 = 35
+            assert r["stat_xp"] == 20.0
+            assert r["match_bonus"] == 15.0
+            assert r["xp"] == 35.0
+            r2 = await service.record_match("p01", "2026-08-08", "", {"rating": 6.5}, "admin")
+            # bands [6~8)+10，未达标
+            assert r2["stat_xp"] == 10.0
+            assert r2["match_bonus"] == 0.0
+            assert r2["xp"] == 45.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())

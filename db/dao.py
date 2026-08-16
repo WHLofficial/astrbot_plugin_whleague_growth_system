@@ -315,6 +315,31 @@ class GrowthDAO:
             row = await cur.fetchone()
         return float(row["v"]) if row else 0.0
 
+    async def sum_stat_values(
+        self, conn, player_uid: str, stat_keys: list, period_no: int | None
+    ) -> float:
+        """多数据项值累计求和（总和里程碑）：period_no 为 None 表示生涯累计。"""
+        if not stat_keys:
+            return 0.0
+        placeholders = ",".join("?" for _ in stat_keys)
+        if period_no is None:
+            sql = (
+                "SELECT COALESCE(SUM(s.value), 0) AS v FROM match_stats s "
+                "JOIN appearances a ON a.id=s.appearance_id "
+                f"WHERE a.player_uid=? AND s.stat_key IN ({placeholders})"
+            )
+            params = (player_uid, *stat_keys)
+        else:
+            sql = (
+                "SELECT COALESCE(SUM(s.value), 0) AS v FROM match_stats s "
+                "JOIN appearances a ON a.id=s.appearance_id "
+                f"WHERE a.player_uid=? AND a.period_no=? AND s.stat_key IN ({placeholders})"
+            )
+            params = (player_uid, period_no, *stat_keys)
+        async with conn.execute(sql, params) as cur:
+            row = await cur.fetchone()
+        return float(row["v"]) if row else 0.0
+
     async def list_awards(self, player_uid: str) -> list:
         return await self._db.fetchall(
             "SELECT * FROM milestone_awards WHERE player_uid=? ORDER BY awarded_at DESC, id DESC",

@@ -63,10 +63,14 @@ class PlayerHandler:
         ]
         awards = profile["awards"]
         if awards:
-            period_label = {"period": "成长期内", "career": "生涯"}
+            rule = await self.growth.get_rule() or {}
+            stats = rule.get("stats", {})
+            period_label = {"period": "成长期内", "career": "生涯", "match": "单场"}
             lines.append(f"已达成里程碑（{len(awards)} 项）:")
             for a in awards[:10]:
-                lines.append(f"· {a['stat_key']} {period_label.get(a['period'], a['period'])}"
+                keys = a["stat_key"].split(",")
+                label = "+".join(stats.get(k, {}).get("name", k) for k in keys)
+                lines.append(f"· {label} {period_label.get(a['period'], a['period'])}"
                              f"累计 {fmt_xp(a['threshold'])}（+{fmt_xp(a['xp'])}）")
         repeat_awards = profile["repeat_awards"]
         if repeat_awards:

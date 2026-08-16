@@ -139,16 +139,27 @@ class AdminHandler:
             f"数据经验 +{fmt_xp(result['stat_xp'])}",
         ]
         if result["awarded"]:
-            period_label = {"period": "成长期内", "career": "生涯"}
+            rule = await self.growth.get_rule() or {}
+            stats = rule.get("stats", {})
+            period_label = {"period": "成长期内", "career": "生涯", "match": "单场"}
             for m in result["awarded"]:
-                if "step" in m:
+                if m["period"] == "match":
+                    name = stats.get(m["stat"], {}).get("name", m["stat"])
                     lines.append(
-                        f"🎉 重复奖励达成: {m['stat_key']} {period_label[m['period']]}"
+                        f"🎉 单场达标: {name} {fmt_xp(m['value'])}≥{fmt_xp(m['threshold'])}"
+                        f" → +{fmt_xp(m['xp'])} 经验"
+                    )
+                elif "step" in m:
+                    name = stats.get(m["stat"], {}).get("name", m["stat"])
+                    lines.append(
+                        f"🎉 重复奖励达成: {name} {period_label[m['period']]}"
                         f"每累计 {fmt_xp(m['step'])} 次 ×{m['count']} → +{fmt_xp(m['gain'])} 经验"
                     )
                 else:
+                    keys = m.get("stat_keys") or [m["stat"]]
+                    name = "+".join(stats.get(k, {}).get("name", k) for k in keys)
                     lines.append(
-                        f"🎉 达成里程碑: {m['stat_key']} {period_label[m['period']]}"
+                        f"🎉 达成里程碑: {name} {period_label[m['period']]}"
                         f"累计 {fmt_xp(m['threshold'])} → +{fmt_xp(m['xp'])} 经验"
                     )
             lines.append(

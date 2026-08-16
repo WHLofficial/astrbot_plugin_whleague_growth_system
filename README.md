@@ -34,7 +34,9 @@
   "milestones": [
     { "stat": "goal", "period": "period", "threshold": 10, "xp": 50 },
     { "stat": "goal", "period": "career", "threshold": 100, "xp": 1000 },
-    { "stat": "appearance", "period": "period", "step": 10, "xp": 50 }
+    { "stat": "appearance", "period": "period", "step": 10, "xp": 50 },
+    { "stats": ["goal", "assist"], "period": "period", "threshold": 20, "xp": 80 },
+    { "stat": "rating", "period": "match", "threshold": 9.0, "xp": 10 }
   ],
   "level_xp": 100
 }
@@ -46,7 +48,9 @@
 - `milestones`：
   - **一次性**（`threshold`）：数据项在 `period`（当前成长期内数据值累计）或 `career`（生涯数据值累计）达到阈值时，一次性奖励经验；每个球员每个里程碑只颁发一次。
   - **重复**（`step`）：数据项每累计达到 `step` 次就奖励一次经验，可重复触发（如每累计出场 10 次奖励 50）；成长期推进后重新累计。
-  - 区间型（bands）数据项不能作为里程碑/repeat 的数据项。
+  - **多数据项总和**（`stats: [key1, key2, ...]`）：多项数据累计值**之和**达阈值给一次性奖励（如 进球+助攻 累计合计达 20 奖励 80）；CSV/Excel 的 stat 列写 `goal,assist`（逗号分隔）。仅支持一次性 threshold；多数据项总和暂不支持每累计 n 次重复奖励。
+  - **单场达标**（`period: "match"`）：数据项单场值 ≥ 阈值（如评分 ≥9.0）额外奖励经验，每场判断、可重复；同一数据项设多条达标规则（如 ≥9.0 和 ≥9.5）时一场同时满足则全部累加。区间型（bands）数据项也可配置，与区间经验叠加；覆盖重录按新值重算（奖励随场次回收/补发）。
+  - 区间型（bands）数据项不能作为累计型（period/career）里程碑/repeat 的数据项（单场达标 match 除外）。
 - `level_xp`：每级所需固定经验（默认 100，可在配置修改默认值）。
 - 所有经验值（单位经验、区间奖励、里程碑/重复奖励、level_xp）**最多 1 位小数**（如 2.5）；`step`（次数）必须为整数。
 
@@ -64,6 +68,8 @@
 | milestone | goal | | 50 | period | 10 | | |
 | milestone | goal | | 1000 | career | 100 | | |
 | repeat | appearance | | 50 | period | 10 | | |
+| milestone | goal,assist | | 80 | period | 20 | | |
+| milestone | rating | | 10 | match | 9.0 | | |
 | level | | | 100 | | | | |
 
 无类型列（首列直接是数据项键，其余列位整体左移一列）：

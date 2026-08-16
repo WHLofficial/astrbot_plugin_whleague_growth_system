@@ -12,8 +12,8 @@ import json
 
 from ..utils.security import sanitize_text, sanitize_uid
 
-VALID_PERIODS = ("period", "career")
-"""period=成长期内数据值累计；career=生涯数据值累计。"""
+VALID_PERIODS = ("period", "career", "match")
+"""period=成长期内数据值累计；career=生涯数据值累计；match=单场数据达标额外奖励。"""
 
 
 class RuleError(ValueError):
@@ -149,25 +149,80 @@ def normalize_rule(data: dict, default_level_xp: int) -> dict:
     for i, m in enumerate(m_raw):
         if not isinstance(m, dict):
             raise RuleError(f"里程碑第 {i+1} 条需为对象")
-        stat = sanitize_uid(str(m.get("stat", "")))
-        if not stat:
-            raise RuleError(f"里程碑第 {i+1} 条缺少数据项 stat")
-        if stat not in stats:
-            raise RuleError(f"里程碑第 {i+1} 条的数据项 {stat} 未在 stats 中定义")
-        if stats[stat].get("bands") is not None:
-            raise RuleError(
-                f"区间型数据项 {stat}（bands）不能作为里程碑/repeat 的数据项"
-            )
         period = str(m.get("period", "period")).strip().lower()
         if period not in VALID_PERIODS:
-            raise RuleError(f"里程碑第 {i+1} 条的 period 需为 period 或 career: {period}")
+            raise RuleError(
+                f"里程碑第 {i+1} 条的 period 需为 period/career/match: {period}"
+            )
         threshold_raw = m.get("threshold")
         step_raw = m.get("step")
         if threshold_raw is not None and step_raw is not None:
             raise RuleError(f"里程碑第 {i+1} 条不能同时定义 threshold 与 step")
         xp = _pos_1dp(m.get("xp"), f"里程碑第 {i+1} 条的奖励经验 xp")
+
+        # 数据项：stat（字符串，可含逗号分隔多 key，兼容表格写法）或 stats（数组，JSON 推荐）
+        stat_raw = m.get("stat")
+        stats_list = m.get("stats")
+        if stat_raw is not None and stats_list is not None:
+            raise RuleError(
+                f"里程碑第 {i+1} 条不能同时定义 stat 与 stats（多数据项请用 stats 数组）"
+            )
+        if stats_list is not None:
+            if not isinstance(stats_list, list) or not stats_list:
+                raise RuleError(f"里程碑第 {i+1} 条的 stats 需为非空数组")
+            stat_keys = []
+            for item in stats_list:
+                k = sanitize_uid(str(item))
+                if not k:
+                    raise RuleError(f"里程碑第 {i+1} 条 stats 含非法数据项")
+                stat_keys.append(k)
+        else:
+            raw_stat = sanitize_uid(str(stat_raw or ""))
+            if not raw_stat:
+                raise RuleError(f"里程碑第 {i+1} 条缺少数据项 stat")
+            stat_keys = [k for k in (s.strip() for s in raw_stat.split(",")) if k]
+        stat_keys = list(dict.fromkeys(stat_keys))
+        if not stat_keys:
+            raise RuleError(f"里程碑第 {i+1} 条缺少数据项 stat")
+
+        # 单场达标（period=match）：仅 threshold 型，仅单个数据项，允许 bands 数据项
+        if period == "match":
+            if step_raw is not None:
+                raise RuleError(
+                    f"里程碑第 {i+1} 条：单场达标（period=match）不支持每累计 n 次重复奖励"
+                )
+            if len(stat_keys) != 1:
+                raise RuleError(
+                    f"里程碑第 {i+1} 条：单场达标（period=match）仅支持单个数据项"
+                )
+            stat = stat_keys[0]
+            if stat not in stats:
+                raise RuleError(f"里程碑第 {i+1} 条的数据项 {stat} 未在 stats 中定义")
+            threshold = _pos_num(threshold_raw, f"里程碑第 {i+1} 条的阈值 threshold")
+            dedup_key = (stat, "match", "threshold", threshold)
+            if dedup_key in seen:
+                raise RuleError(f"里程碑重复定义: {stat}/match/{threshold}")
+            seen.add(dedup_key)
+            milestones.append(
+                {"stat": stat, "period": "match", "threshold": threshold, "xp": xp}
+            )
+            continue
+
+        # 累计型（period/career）：每个数据项须已定义且为线性型（非 bands）
+        for k in stat_keys:
+            if k not in stats:
+                raise RuleError(f"里程碑第 {i+1} 条的数据项 {k} 未在 stats 中定义")
+            if stats[k].get("bands") is not None:
+                raise RuleError(
+                    f"区间型数据项 {k}（bands）不能作为里程碑/repeat 的数据项"
+                )
         if step_raw is not None:
             # 每累计 step 次奖励一次（可重复触发）；step 是次数，保持整数
+            if len(stat_keys) > 1:
+                raise RuleError(
+                    f"里程碑第 {i+1} 条：多数据项总和暂不支持每累计 n 次重复奖励"
+                )
+            stat = stat_keys[0]
             step = _pos_int(step_raw, f"里程碑第 {i+1} 条的步长 step")
             dedup_key = (stat, period, "step", step)
             if dedup_key in seen:
@@ -178,13 +233,31 @@ def normalize_rule(data: dict, default_level_xp: int) -> dict:
             )
         else:
             threshold = _pos_num(threshold_raw, f"里程碑第 {i+1} 条的阈值 threshold")
-            dedup_key = (stat, period, "threshold", threshold)
-            if dedup_key in seen:
-                raise RuleError(f"里程碑重复定义: {stat}/{period}/{threshold}")
-            seen.add(dedup_key)
-            milestones.append(
-                {"stat": stat, "period": period, "threshold": threshold, "xp": xp}
-            )
+            stat_keys.sort()
+            if len(stat_keys) > 1:
+                dedup_key = (tuple(stat_keys), period, "threshold", threshold)
+                if dedup_key in seen:
+                    raise RuleError(
+                        f"里程碑重复定义: {'+'.join(stat_keys)}/{period}/{threshold}"
+                    )
+                seen.add(dedup_key)
+                milestones.append(
+                    {
+                        "stat_keys": stat_keys,
+                        "period": period,
+                        "threshold": threshold,
+                        "xp": xp,
+                    }
+                )
+            else:
+                stat = stat_keys[0]
+                dedup_key = (stat, period, "threshold", threshold)
+                if dedup_key in seen:
+                    raise RuleError(f"里程碑重复定义: {stat}/{period}/{threshold}")
+                seen.add(dedup_key)
+                milestones.append(
+                    {"stat": stat, "period": period, "threshold": threshold, "xp": xp}
+                )
 
     level_xp = data.get("level_xp")
     if level_xp is None:
@@ -321,11 +394,12 @@ def parse_rule_table(rows: list, cfg: dict, default_level_xp: int) -> dict:
         key = sanitize_uid(cell(row, c_stat))
         if not key:
             raise RuleError(f"第{idx}行: 里程碑数据项为空")
-        if key not in data["stats"]:
+        # 多数据项总和（goal,assist）由 normalize_rule 统一拆分校验
+        if "," not in key and key not in data["stats"]:
             raise RuleError(f"第{idx}行: 里程碑数据项 {key} 未在 stat/band 行中定义")
         period = cell(row, c_period).strip().lower() or "period"
         if period not in VALID_PERIODS:
-            raise RuleError(f"第{idx}行: period 需为 period/career: {period}")
+            raise RuleError(f"第{idx}行: period 需为 period/career/match: {period}")
         threshold = _pos_num(cell(row, c_thr), f"第{idx}行 里程碑阈值")
         xp = _pos_1dp(cell(row, c_xp), f"第{idx}行 里程碑奖励经验")
         data["milestones"].append(
@@ -336,11 +410,13 @@ def parse_rule_table(rows: list, cfg: dict, default_level_xp: int) -> dict:
         key = sanitize_uid(cell(row, c_stat))
         if not key:
             raise RuleError(f"第{idx}行: repeat 数据项为空")
+        if "," in key:
+            raise RuleError(f"第{idx}行: repeat 每累计 n 次奖励不支持多数据项（{key}）")
         if key not in data["stats"]:
             raise RuleError(f"第{idx}行: repeat 数据项 {key} 未在 stat/band 行中定义")
         period = cell(row, c_period).strip().lower() or "period"
         if period not in VALID_PERIODS:
-            raise RuleError(f"第{idx}行: period 需为 period/career: {period}")
+            raise RuleError(f"第{idx}行: period 需为 period/career/match: {period}")
         step = _pos_int(cell(row, c_thr), f"第{idx}行 repeat 步长 step（threshold 列）")
         xp = _pos_1dp(cell(row, c_xp), f"第{idx}行 repeat 奖励经验")
         data["milestones"].append(
@@ -377,18 +453,30 @@ def format_rule(rule: dict) -> str:
     milestones = rule["milestones"]
     if milestones:
         lines.append(f"· 里程碑（{len(milestones)} 条）:")
-        period_label = {"period": "成长期内", "career": "生涯"}
+        period_label = {"period": "成长期内", "career": "生涯", "match": "单场"}
         for m in milestones:
-            stat = stats.get(m["stat"], {})
-            name = stat.get("name", m["stat"])
-            if "step" in m:
+            if "stat_keys" in m:
+                names = "+".join(stats.get(k, {}).get("name", k) for k in m["stat_keys"])
                 lines.append(
-                    f"  {name} {period_label.get(m['period'], m['period'])}"
+                    f"  {names} {period_label[m['period']]}"
+                    f"累计合计达 {fmt_xp(m['threshold'])} → 奖励 {fmt_xp(m['xp'])} 经验"
+                )
+                continue
+            stat = m["stat"]
+            name = stats.get(stat, {}).get("name", stat)
+            if m["period"] == "match":
+                lines.append(
+                    f"  {name} 单场达 {fmt_xp(m['threshold'])}"
+                    f" → 额外 {fmt_xp(m['xp'])} 经验"
+                )
+            elif "step" in m:
+                lines.append(
+                    f"  {name} {period_label[m['period']]}"
                     f"每累计 {fmt_xp(m['step'])} 次 → 奖励 {fmt_xp(m['xp'])} 经验（可重复）"
                 )
             else:
                 lines.append(
-                    f"  {name} {period_label.get(m['period'], m['period'])}"
+                    f"  {name} {period_label[m['period']]}"
                     f"累计达 {fmt_xp(m['threshold'])} → 奖励 {fmt_xp(m['xp'])} 经验"
                 )
     else:
