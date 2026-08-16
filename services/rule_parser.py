@@ -60,6 +60,14 @@ def _pos_1dp(raw, field: str) -> float:
     return round(v, 1)
 
 
+def _nonneg_1dp(raw, field: str) -> float:
+    """非负且最多 1 位小数（仅用于数据项单位经验：0 表示仅作计数、不给数据经验）。"""
+    v = _nonneg_num(raw, field)
+    if round(v, 1) != v:
+        raise RuleError(f"{field} 最多 1 位小数: {raw}")
+    return round(v, 1)
+
+
 def _normalize_bands(bands_raw, stat_key: str) -> list:
     """校验并规范化区间（bands）列表。
 
@@ -122,7 +130,7 @@ def normalize_rule(data: dict, default_level_xp: int) -> dict:
         if isinstance(meta, (int, float)):
             # 简写：{"goal": 10} 等价于 {"goal": {"name": "goal", "xp": 10}}
             name = k
-            xp = _pos_1dp(meta, f"数据项 {k} 的单位经验 xp")
+            xp = _nonneg_1dp(meta, f"数据项 {k} 的单位经验 xp")
             stats[k] = {"name": name, "xp": xp}
             continue
         if not isinstance(meta, dict):
@@ -138,7 +146,7 @@ def normalize_rule(data: dict, default_level_xp: int) -> dict:
                 raise RuleError(f"数据项 {k} 不能同时定义 xp 与 bands")
             stats[k] = {"name": name, "bands": _normalize_bands(bands_raw, k)}
         else:
-            xp = _pos_1dp(xp_raw, f"数据项 {k} 的单位经验 xp")
+            xp = _nonneg_1dp(xp_raw, f"数据项 {k} 的单位经验 xp")
             stats[k] = {"name": name, "xp": xp}
 
     milestones = []
@@ -281,14 +289,21 @@ def parse_rule_table(rows: list, cfg: dict, default_level_xp: int) -> dict:
     无类型列的文件（首列直接是数据项键）时，其余列位整体左移一列：
     类型列位置即 stat 列。类型列缺失或值非法即视为无类型列布局。
     """
-    col_type = int(cfg.get("import_col_type", 1) or 0)
-    col_stat = int(cfg.get("import_col_stat", 2) or 0)
-    col_name = int(cfg.get("import_col_name", 3) or 0)
-    col_xp = int(cfg.get("import_col_xp", 4) or 0)
-    col_period = int(cfg.get("import_col_period", 5) or 0)
-    col_threshold = int(cfg.get("import_col_threshold", 6) or 0)
-    col_band_min = int(cfg.get("import_col_band_min", 7) or 0)
-    col_band_max = int(cfg.get("import_col_band_max", 8) or 0)
+    # cfg 兼容 dict 与配置读取函数（config_cache.get 绑定方法），
+    # 保证导入 CSV/Excel 规则文件的生产路径可用
+    def _get(key: str, default):
+        if hasattr(cfg, "get"):
+            return cfg.get(key, default)
+        return cfg(key, default)
+
+    col_type = int(_get("import_col_type", 1) or 0)
+    col_stat = int(_get("import_col_stat", 2) or 0)
+    col_name = int(_get("import_col_name", 3) or 0)
+    col_xp = int(_get("import_col_xp", 4) or 0)
+    col_period = int(_get("import_col_period", 5) or 0)
+    col_threshold = int(_get("import_col_threshold", 6) or 0)
+    col_band_min = int(_get("import_col_band_min", 7) or 0)
+    col_band_max = int(_get("import_col_band_max", 8) or 0)
 
     def cell(row, col: int) -> str:
         if col <= 0 or col > len(row):
@@ -359,7 +374,7 @@ def parse_rule_table(rows: list, cfg: dict, default_level_xp: int) -> dict:
         if not key:
             raise RuleError(f"第{idx}行: 数据项键为空")
         name = sanitize_text(cell(row, c_name)) or key
-        xp = _pos_1dp(cell(row, c_xp), f"第{idx}行 数据项 {key} 的单位经验")
+        xp = _nonneg_1dp(cell(row, c_xp), f"第{idx}行 数据项 {key} 的单位经验")
         if key in data["stats"]:
             raise RuleError(f"第{idx}行: 数据项键重复 {key}")
         data["stats"][key] = {"name": name, "xp": xp}

@@ -472,11 +472,11 @@ def test_parse_decimal_xp():
     bad["stats"]["goal"]["xp"] = 0.25
     with pytest.raises(RuleError):
         parse_rule_json(json.dumps(bad), 100)
-    # 非正报错
+    # 数据项单位经验 0 合法（v0.5.1 计数型数据项）
     bad = json.loads(json.dumps(_decimal_rule()))
     bad["stats"]["goal"]["xp"] = 0
-    with pytest.raises(RuleError):
-        parse_rule_json(json.dumps(bad), 100)
+    rule0 = parse_rule_json(json.dumps(bad), 100)
+    assert rule0["stats"]["goal"]["xp"] == 0.0
     # step 仍要求整数
     bad = json.loads(json.dumps(_decimal_rule()))
     bad["milestones"][1]["step"] = 2.5
@@ -1609,3 +1609,82 @@ def test_match_bonus_bands_stat():
         _run_async(_run())
     finally:
         asyncio.run(env["db"].close())
+
+
+# ─── 计数型数据项（单位经验 0，仅靠累计里程碑，v0.5.1）─────
+
+def test_stat_xp_zero_allowed():
+    rule = parse_rule_json(
+        json.dumps({"stats": {"saves": {"name": "扑救", "xp": 0}}, "milestones": [], "level_xp": 100}),
+        100,
+    )
+    assert rule["stats"]["saves"]["xp"] == 0.0
+    # 简写 0 也合法
+    rule2 = parse_rule_json(json.dumps({"stats": {"saves": 0}, "milestones": []}), 100)
+    assert rule2["stats"]["saves"]["xp"] == 0.0
+
+
+def test_stat_xp_zero_calc():
+    service, dao, imp, tmp, env = _make_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            rule = parse_rule_json(
+                json.dumps(
+                    {
+                        "stats": {"saves": {"name": "扑救", "xp": 0}},
+                        "milestones": [
+                            {"stat": "saves", "period": "period", "step": 8, "xp": 1},
+                            {"stat": "saves", "period": "match", "threshold": 9, "xp": 1},
+                        ],
+                        "level_xp": 100,
+                    }
+                ),
+                100,
+            )
+            await service.save_rule(rule, "test", "admin")
+            # 单场 9 次扑救：数据经验 0，repeat 8 次 +1，单场 >8 次 +1 → 共 +2
+            r = await service.record_match("p01", "2026-08-01", "", {"saves": 9}, "admin")
+            assert r["stat_xp"] == 0.0
+            assert r["match_bonus"] == 1.0
+            assert r["bonus_xp"] == 2.0
+            assert r["xp"] == 2.0
+            # 再录 7 次（累计 16）：repeat 再 +1，单场 7 次不达标 → +1
+            r2 = await service.record_match("p01", "2026-08-08", "", {"saves": 7}, "admin")
+            assert r2["match_bonus"] == 0.0
+            assert r2["bonus_xp"] == 1.0
+            p = await dao.get_player("p01")
+            assert p["xp"] == 3.0
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_zero_xp_rejected_outside_stat():
+    # band 段经验、里程碑奖励、level_xp 仍须为正数
+    bad = _bands_rule()
+    bad["stats"]["rating"]["bands"][0]["xp"] = 0
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad), 100)
+    bad2 = _rule_json()
+    bad2["milestones"][0]["xp"] = 0
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad2), 100)
+    bad3 = _rule_json()
+    bad3["level_xp"] = 0
+    with pytest.raises(RuleError):
+        parse_rule_json(json.dumps(bad3), 100)
+
+
+def test_parse_rule_table_cfg_callable():
+    """回归：parse_rule_table 的 cfg 传入 config_cache.get 绑定方法（生产路径）也能解析。"""
+    rows = [
+        ["type", "stat", "name", "xp", "period", "threshold", "min", "max"],
+        ["stat", "appearance", "出场", "1", "", "", "", ""],
+        ["band", "rating", "评分", "1", "", "", "7", "8"],
+        ["level", "", "", "100", "", "", "", ""],
+    ]
+    rule = parse_rule_table(rows, DEFAULT_CONFIG.get, 100)
+    assert rule["stats"]["appearance"]["xp"] == 1.0
+    assert rule["stats"]["rating"]["bands"][0]["min"] == 7.0
+    assert rule["level_xp"] == 100.0
