@@ -9,7 +9,7 @@ t2i 防止框架抢先转图。含图片/文件等非纯文本消息链不转换
 from astrbot.api.event import MessageEventResult
 from astrbot.api.message_components import Node, Nodes, Plain
 
-TRUNCATE_HINT = "…（其余省略，可用 /成长导出 获取完整数据）"
+TRUNCATE_HINT = "…（其余省略，可用 /成长 导出 获取完整数据）"
 
 
 def count_lines(text: str) -> int:

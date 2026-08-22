@@ -1,11 +1,19 @@
-"""玩家侧命令处理器（只读查询）。"""
+"""玩家侧子命令处理器（只读查询）。
+
+统一签名 (event, args)：args 为去掉 /成长 与子命令后的参数列表，
+由 main.py 分发器解析传入；参数校验失败一律报 usage（不静默回退）。
+"""
 
 from collections.abc import AsyncGenerator
 
 from astrbot.api.event import AstrMessageEvent, MessageEventResult
 
 from ..utils.messages import build_help, usage
-from ..utils.security import fmt_xp
+from ..utils.security import find_by_name, fmt_xp
+
+# 当前期每人明细的防御性行数上限（超出提示用导出获取完整数据；
+# 长输出由转发卡片兜底防刷屏，正常规模联赛不会触达此上限）
+_PERIOD_DETAIL_MAX_ROWS = 500
 
 
 class PlayerHandler:
@@ -28,31 +36,65 @@ class PlayerHandler:
     def export_service(self):
         return self._plugin.export_service
 
-    async def help(self, event: AstrMessageEvent, is_admin: bool = False) -> AsyncGenerator[MessageEventResult, None]:
+    async def help(
+        self, event: AstrMessageEvent, args: list[str] | None = None
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        is_admin = await self._plugin.admin_handler._is_admin(event)
         yield event.plain_result(build_help(is_admin))
 
-    async def show_rule(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
+    async def show_rule(
+        self, event: AstrMessageEvent, args: list[str] | None = None
+    ) -> AsyncGenerator[MessageEventResult, None]:
         rule = await self.growth.get_rule()
         if rule is None:
             yield event.plain_result(
                 "尚未导入成长规则。请管理员在群内发送 规则_*.json/csv/xlsx 文件，"
-                "或使用 /成长导入文件 <文件名> 预览后确认导入。"
+                "或使用 /成长 导入 <文件名> 预览后确认导入。"
             )
             return
         from ..services import rule_parser
 
         yield event.plain_result(f"【当前成长规则】\n{rule_parser.format_rule(rule)}")
 
-    async def query_player(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
-        parts = event.get_message_str().split()
-        if len(parts) < 2:
-            yield event.plain_result(usage("成长查询", "<球员ID>", "/成长查询 p01"))
+    # ─── 查询：UID 精确 → 姓名精确 → 姓名模糊 ───────────────
+
+    @staticmethod
+    def _match_by_name(ref: str, players: list) -> tuple:
+        """按姓名在球员列表中定位（见 utils.security.find_by_name），返回 (player_uid, 错误消息)；均无则 (None, None)。"""
+
+        def _names(matches: list) -> str:
+            names = "、".join(f"{p['name']}({p['player_uid']})" for p in matches[:5])
+            return names + " 等" if len(matches) > 5 else names
+
+        matches, exact = find_by_name(ref, players)
+        if not matches:
+            return None, None
+        if len(matches) > 1:
+            label = "同名" if exact else "相近"
+            return None, f"存在多个{label}球员: {_names(matches)}，请使用球员ID"
+        return matches[0]["player_uid"], None
+
+    async def query_player(
+        self, event: AstrMessageEvent, args: list[str]
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        if not args:
+            yield event.plain_result(usage("查询", "<球员ID|姓名>", "/成长 查询 p01"))
             return
-        player_uid = parts[1].strip()
-        profile = await self.growth.get_profile(player_uid)
+        ref = args[0].strip()
+        profile = await self.growth.get_profile(ref)
         if profile is None:
-            yield event.plain_result(f"未找到球员 {player_uid}，可用 /成长球员 查看球员名单。")
-            return
+            players = await self.dao.list_all_active_players()
+            uid, err = self._match_by_name(ref, players)
+            if err:
+                yield event.plain_result(f"⚠️ {err}")
+                return
+            if uid is None:
+                yield event.plain_result(f"未找到球员 {ref}，可用 /成长 球员 查看球员名单。")
+                return
+            profile = await self.growth.get_profile(uid)
+            if profile is None:  # 防御：理论上不可达
+                yield event.plain_result(f"未找到球员 {ref}，可用 /成长 球员 查看球员名单。")
+                return
         p = profile["player"]
         lines = [
             f"【{p['name']}】({p['player_uid']})",
@@ -88,17 +130,30 @@ class PlayerHandler:
                 lines.append(f"· {a['match_date']} vs {a['opponent'] or '?'} 经验 +{fmt_xp(a['total_xp'])}")
         yield event.plain_result("\n".join(lines))
 
-    async def rank(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
-        parts = event.get_message_str().split()
+    # ─── 排行 / 名单 ────────────────────────────────────────
+
+    async def rank(
+        self, event: AstrMessageEvent, args: list[str]
+    ) -> AsyncGenerator[MessageEventResult, None]:
         mode = "period"
         page = 1
-        if len(parts) >= 2:
-            if parts[1].strip() == "生涯":
+        if args:
+            if args[0] == "生涯":
                 mode = "career"
-                if len(parts) >= 3 and parts[2].strip().isdigit():
-                    page = int(parts[2].strip())
-            elif parts[1].strip().isdigit():
-                page = int(parts[1].strip())
+                if len(args) > 1:
+                    if len(args) > 2 or not args[1].isdigit():
+                        yield event.plain_result(
+                            usage("排行", "[页] 或 生涯 [页]", "/成长 排行 生涯 2")
+                        )
+                        return
+                    page = int(args[1])
+            elif len(args) == 1 and args[0].isdigit():
+                page = int(args[0])
+            else:
+                yield event.plain_result(
+                    usage("排行", "[页] 或 生涯 [页]", "/成长 排行 生涯 2")
+                )
+                return
         result = await self.growth.rank(mode, max(1, page))
         rows = result["rows"]
         page_size = self.growth._page_size()
@@ -112,9 +167,15 @@ class PlayerHandler:
             lines.append(f"{i}. {p['name']}({p['player_uid']}) Lv{p['level']} 经验 {fmt_xp(val)}")
         yield event.plain_result("\n".join(lines))
 
-    async def list_players(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
-        parts = event.get_message_str().split()
-        page = int(parts[1].strip()) if len(parts) >= 2 and parts[1].strip().isdigit() else 1
+    async def list_players(
+        self, event: AstrMessageEvent, args: list[str]
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        page = 1
+        if args:
+            if len(args) > 1 or not args[0].isdigit():
+                yield event.plain_result(usage("球员", "[页]", "/成长 球员 2"))
+                return
+            page = int(args[0])
         page = max(1, page)
         page_size = self.growth._page_size()
         rows = await self.dao.list_players(page, page_size)
@@ -128,39 +189,16 @@ class PlayerHandler:
             lines.append(f"· {p['name']}({p['player_uid']}) {p['team'] or ''} Lv{p['level']}".rstrip())
         yield event.plain_result("\n".join(lines))
 
-    async def preview(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
-        """预览当前未结束成长期的成长数据（公开）。"""
-        period = await self.dao.get_current_period()
-        if period is None:
-            yield event.plain_result("不存在当前成长期，暂无可预览的数据。")
-            return
-        rows = await self.export_service.rows_current()
-        if not rows:
-            yield event.plain_result(
-                f"【当前成长期 #{period['period_no']} {period['name']}】\n暂无球员数据，请管理员导入球员库后查看。"
-            )
-            return
-        gained = round(sum(float(r["xp_gained"]) for r in rows), 1)
-        lines = [
-            f"【当前成长期 #{period['period_no']} {period['name']}】",
-            f"共 {len(rows)} 人 · 期内累计获得经验 {fmt_xp(gained)}",
-            "球员名(ID) | 期初 | 期内获得 | 当前总经验 | 等级",
-        ]
-        for r in rows[:50]:
-            lines.append(
-                f"· {r['player_name']}({r['player_uid']}) "
-                f"期初 {fmt_xp(r['xp_start'])} | 获得 {fmt_xp(r['xp_gained'])}"
-                f" | 总 {fmt_xp(r['xp_end'])} | Lv{r['level']}"
-            )
-        if len(rows) > 50:
-            lines.append(f"… 其余 {len(rows) - 50} 人（完整数据请管理员执行 /成长导出）")
-        yield event.plain_result("\n".join(lines))
+    # ─── 期：无参=当前期概况+明细+历史；期号=该期结算明细 ────
 
-    async def period_status(self, event: AstrMessageEvent) -> AsyncGenerator[MessageEventResult, None]:
-        parts = event.get_message_str().split()
-        # 带期号：查看该成长期结果明细
-        if len(parts) >= 2 and parts[1].strip().isdigit():
-            period_no = int(parts[1].strip())
+    async def period_status(
+        self, event: AstrMessageEvent, args: list[str]
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        if args:
+            if len(args) > 1 or not args[0].isdigit():
+                yield event.plain_result(usage("期", "[期号]", "/成长 期 2"))
+                return
+            period_no = int(args[0])
             result = await self.growth.period_result(period_no)
             if result is None:
                 yield event.plain_result(f"未找到成长期 #{period_no} 的结果（期号不存在或该期尚无快照）")
@@ -191,6 +229,27 @@ class PlayerHandler:
             lines.append(f"每级所需经验: {fmt_xp(rule['level_xp'])}")
         else:
             lines.append("成长规则: 未导入")
+        # 当前期每人成长明细（原 /成长预览 并入；不分页，长输出自动转转发卡片）
+        if cur is not None:
+            rows = await self.export_service.rows_current()
+            if rows:
+                gained = round(sum(float(r["xp_gained"]) for r in rows), 1)
+                lines.append(
+                    f"本期成长数据（{len(rows)} 人 · 期内累计获得经验 {fmt_xp(gained)}）:"
+                )
+                for r in rows[:_PERIOD_DETAIL_MAX_ROWS]:
+                    lines.append(
+                        f"· {r['player_name']}({r['player_uid']}) "
+                        f"期初 {fmt_xp(r['xp_start'])} | 获得 {fmt_xp(r['xp_gained'])}"
+                        f" | 总 {fmt_xp(r['xp_end'])} | Lv{r['level']}"
+                    )
+                if len(rows) > _PERIOD_DETAIL_MAX_ROWS:
+                    lines.append(
+                        f"… 其余 {len(rows) - _PERIOD_DETAIL_MAX_ROWS} 人"
+                        f"（完整数据可让管理员执行 /成长 导出）"
+                    )
+            else:
+                lines.append("暂无球员数据，请管理员导入球员库后查看。")
         summaries = st["summaries"]
         if summaries:
             lines.append("历史成长期:")
@@ -199,5 +258,5 @@ class PlayerHandler:
                     f"· #{s['period_no']} {s['name']}：{s['player_count']}人"
                     f" · 升级{s['upgraded_count']}人 · 期末总经验 {fmt_xp(s['xp_total'])}"
                 )
-            lines.append("回复 /成长期状态 <期号> 查看该期球员明细")
+            lines.append("查看指定期明细: /成长 期 <期号>")
         yield event.plain_result("\n".join(lines))

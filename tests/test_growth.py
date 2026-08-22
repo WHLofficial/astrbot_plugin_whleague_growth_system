@@ -590,9 +590,9 @@ def test_format_rule_decimal_display():
 # ─── 统一反馈文案（utils/messages）─────────────────────────
 
 def test_usage_format():
-    assert usage("成长查询", "<球员ID>") == "用法: /成长查询 <球员ID>"
-    assert usage("成长上报", "<球员ID> <日期> <数据项=值>...", "/成长上报 p01 2026-08-14 进球=2") == (
-        "用法: /成长上报 <球员ID> <日期> <数据项=值>...\n例: /成长上报 p01 2026-08-14 进球=2"
+    assert usage("查询", "<球员ID|姓名>") == "用法: /成长 查询 <球员ID|姓名>"
+    assert usage("上报", "<球员ID> <日期> <数据项=值>...", "/成长 上报 p01 2026-08-14 进球=2") == (
+        "用法: /成长 上报 <球员ID> <日期> <数据项=值>...\n例: /成长 上报 p01 2026-08-14 进球=2"
     )
 
 
@@ -603,13 +603,14 @@ def test_deny_hints_admin_ids():
 
 def test_build_help_requires_admin():
     player_text = build_help(False)
-    assert "管理命令：" not in player_text
-    assert "/成长上报" not in player_text
-    assert "/成长规则" in player_text
+    assert "管理子命令（需管理员）:" not in player_text
+    assert "· 上报" not in player_text
+    assert "· 规则：查看当前规则" in player_text
+    assert "· 期 [期号]：" in player_text
     admin_text = build_help(True)
-    assert "管理命令：" in admin_text
-    assert "/成长设置" in admin_text
-    assert "/成长查看配置" in admin_text
+    assert "管理子命令（需管理员）:" in admin_text
+    assert "· 配置：查看全部配置" in admin_text
+    assert "· 导入 确认 <文件名> [类型]：执行导入" in admin_text
 
 
 def test_error_hints_in_service_messages():
@@ -1203,7 +1204,8 @@ def test_export_build_export_current():
         asyncio.run(env["db"].close())
 
 
-def test_preview_handler_output():
+def test_period_status_merges_preview_detail():
+    """期 无参 = 概况 + 每人成长明细（原 /成长预览 并入）。"""
     import types
 
     from astrbot_plugin_whleague_growth_system.handlers.player import PlayerHandler
@@ -1227,10 +1229,13 @@ def test_preview_handler_output():
             )
             ph = PlayerHandler(plugin)
             ev = _FakeEvent()
-            async for _ in ph.preview(ev):
+            async for _ in ph.period_status(ev, []):
                 pass
             text = ev.results[0]
-            assert "当前成长期" in text and "期内累计获得经验 300" in text
+            # 概况块
+            assert "【当前成长期】" in text and "每级所需经验" in text
+            # 明细块（原预览）
+            assert "期内累计获得经验 300" in text
             assert "球员一(p01)" in text
             assert "期初 0" in text and "总 300" in text and "Lv1" in text
         _run_async(_run())
@@ -1849,7 +1854,7 @@ def test_match_import_not_found():
                     [{"player_uid": "不存在的名字", "match_date": "2026-08-01", "opponent": "", "stats": {"goal": 1}}],
                     "admin",
                 )
-            assert "未找到球员" in str(e.value) and "/成长球员" in str(e.value)
+            assert "未找到球员" in str(e.value) and "/成长 球员" in str(e.value)
         _run_async(_run())
     finally:
         asyncio.run(env["db"].close())
@@ -2124,3 +2129,437 @@ def test_plugin_maybe_forward_threshold_disabled(monkeypatch):
     assert out2 is not r
 
 
+
+
+
+
+# ─── v1.0.0 命令面重构：/成长 两级子命令分发 ────────────────
+
+class _CmdEvent:
+    """分发器/handler 测试用事件桩：记录 plain_result 文本，无 chain（转发透传）。"""
+
+    def __init__(self, text="", admin=False, group_id=None):
+        self.message_str = text
+        self._admin = admin
+        self._group_id = group_id
+        self.results = []
+
+    def get_message_str(self):
+        return self.message_str
+
+    def is_admin(self):
+        return self._admin
+
+    def get_sender_id(self):
+        return "10000"
+
+    def get_group_id(self):
+        return self._group_id
+
+    def plain_result(self, text):
+        self.results.append(text)
+        return self
+
+
+def _make_plugin_env(admin_ids=None):
+    """构造接线完毕的插件实例（真实服务 + 临时库），返回 (plugin, service, dao, imp, tmp, env)。"""
+    from astrbot_plugin_whleague_growth_system.handlers.admin import AdminHandler
+    from astrbot_plugin_whleague_growth_system.handlers.player import PlayerHandler
+    from astrbot_plugin_whleague_growth_system.main import GrowthSystemPlugin
+
+    service, dao, imp, tmp, env = _make_env()
+    export = ExportService(service._db, dao)
+    plugin = GrowthSystemPlugin.__new__(GrowthSystemPlugin)
+    plugin._config = {}
+    cfg = dict(DEFAULT_CONFIG)
+    if admin_ids is not None:
+        cfg["admin_ids"] = admin_ids
+    plugin.config_cache = cfg
+    plugin.dao = dao
+    plugin.growth_service = service
+    plugin.import_service = imp
+    plugin.export_service = export
+    plugin.player_handler = PlayerHandler(plugin)
+    plugin.admin_handler = AdminHandler(plugin)
+    plugin._subs = plugin._build_subs()
+    return plugin, service, dao, imp, tmp, env
+
+
+async def _dispatch(plugin, ev):
+    outs = []
+    async for r in plugin.cmd_growth(ev):
+        outs.append(r)
+    return outs
+
+
+def test_dispatch_routes_subcommands():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            ev = _CmdEvent("成长 排行", admin=True)
+            await _dispatch(plugin, ev)
+            assert any("【成长排行·本期】" in t for t in ev.results)
+
+            ev2 = _CmdEvent("成长 球员", admin=True)
+            await _dispatch(plugin, ev2)
+            assert any("【球员名单】" in t for t in ev2.results)
+
+            ev3 = _CmdEvent("成长 规则", admin=True)
+            await _dispatch(plugin, ev3)
+            assert any("【当前成长规则】" in t for t in ev3.results)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_dispatch_no_args_shows_help():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ev = _CmdEvent("成长", admin=False)
+            await _dispatch(plugin, ev)
+            assert len(ev.results) == 1
+            assert "【成长系统】命令格式" in ev.results[0]
+            assert "管理子命令（需管理员）:" not in ev.results[0]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_dispatch_unknown_subcommand():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ev = _CmdEvent("成长 乱写", admin=True)
+            await _dispatch(plugin, ev)
+            assert ev.results[0].startswith("未知子命令: 乱写")
+            assert "【成长系统】" in ev.results[0]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_dispatch_legacy_command_migration_hint():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ev = _CmdEvent("成长排行")
+            await _dispatch(plugin, ev)
+            assert "命令已改版" in ev.results[0]
+            assert "/成长 排行" in ev.results[0]
+
+            ev2 = _CmdEvent("成长确认导入 规则_a.json")
+            await _dispatch(plugin, ev2)
+            assert "/成长 导入 确认 <文件名> [类型]" in ev2.results[0]
+
+            ev3 = _CmdEvent("成长乱写xyz")
+            await _dispatch(plugin, ev3)
+            assert ev3.results[0].startswith("未知命令: /成长乱写xyz")
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_dispatch_subcommand_aliases():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            for alias in ("预览", "期状态"):
+                ev = _CmdEvent(f"成长 {alias}", admin=True)
+                await _dispatch(plugin, ev)
+                assert any("【当前成长期】" in t for t in ev.results), alias
+            ev2 = _CmdEvent("成长 排名", admin=True)
+            await _dispatch(plugin, ev2)
+            assert any("【成长排行·本期】" in t for t in ev2.results)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_dispatch_admin_gate():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ev = _CmdEvent("成长 配置", admin=False)
+            await _dispatch(plugin, ev)
+            assert "该命令需要管理员权限" in ev.results[0]
+
+            ev2 = _CmdEvent("成长 配置", admin=True)
+            await _dispatch(plugin, ev2)
+            assert "【成长系统配置】" in ev2.results[0]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_dispatch_admin_ids_config():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env(admin_ids=["10000"])
+    try:
+        async def _run():
+            ev = _CmdEvent("成长 配置", admin=False)  # 非群管理但命中 admin_ids
+            await _dispatch(plugin, ev)
+            assert "【成长系统配置】" in ev.results[0]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_dispatch_group_whitelist_blocks():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    plugin.config_cache["group_whitelist"] = ["999"]
+    try:
+        async def _run():
+            ev = _CmdEvent("成长 排行", admin=True, group_id="123")
+            await _dispatch(plugin, ev)
+            assert ev.results == []
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_dispatch_args_passed_to_handler():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            ev = _CmdEvent("成长 上报 p01 2026-08-14 goal=2", admin=True)
+            await _dispatch(plugin, ev)
+            assert any("✅ 已录入 球员一(p01)" in t for t in ev.results)
+            ev2 = _CmdEvent("成长 排行 生涯 1", admin=True)
+            await _dispatch(plugin, ev2)
+            assert any("【成长排行·生涯】" in t for t in ev2.results)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_query_by_name_exact_and_fuzzy():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            async def _add(*players):
+                async def _tx(conn):
+                    for uid, name, team in players:
+                        await dao.upsert_player(conn, uid, name, team, "admin")
+                await service._db.execute_transaction(_tx)
+
+            await _setup(service, dao)
+            await _add(("p10", "Van Dijk", "A队"), ("p11", "Messi", "B队"))
+            ph = plugin.player_handler
+            # 姓名精确（含空格/大小写差异）
+            ev = _CmdEvent()
+            async for _ in ph.query_player(ev, ["van dijk"]):
+                pass
+            assert "【Van Dijk】(p10)" in ev.results[0]
+            # 姓名模糊（1 处字母差异）
+            ev2 = _CmdEvent()
+            async for _ in ph.query_player(ev2, ["Van Dyjk"]):
+                pass
+            assert "【Van Dijk】(p10)" in ev2.results[0]
+            # UID 精确优先
+            ev3 = _CmdEvent()
+            async for _ in ph.query_player(ev3, ["p11"]):
+                pass
+            assert "【Messi】(p11)" in ev3.results[0]
+            # 未找到
+            ev4 = _CmdEvent()
+            async for _ in ph.query_player(ev4, ["无此人"]):
+                pass
+            assert "未找到球员 无此人" in ev4.results[0] and "/成长 球员" in ev4.results[0]
+            # 缺参 usage
+            ev5 = _CmdEvent()
+            async for _ in ph.query_player(ev5, []):
+                pass
+            assert "用法: /成长 查询 <球员ID|姓名>" in ev5.results[0]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_query_by_name_multiple_candidates():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            async def _tx(conn):
+                await dao.upsert_player(conn, "p01", "Smith", "A队", "admin")
+                await dao.upsert_player(conn, "p02", "Smith", "B队", "admin")
+            await service._db.execute_transaction(_tx)
+            ev = _CmdEvent()
+            async for _ in plugin.player_handler.query_player(ev, ["Smith"]):
+                pass
+            assert "存在多个同名球员" in ev.results[0] and "请使用球员ID" in ev.results[0]
+            assert "p01" in ev.results[0] and "p02" in ev.results[0]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_rank_and_players_invalid_page_usage():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            ph = plugin.player_handler
+            for args, kw in (
+                (["abc"], "排行"), (["生涯", "x"], "排行"), (["1", "2"], "排行"),
+                (["abc"], "球员"), (["1", "2"], "球员"),
+            ):
+                ev = _CmdEvent()
+                handler = ph.rank if kw == "排行" else ph.list_players
+                async for _ in handler(ev, args):
+                    pass
+                assert ev.results[0].startswith(f"用法: /成长 {kw}"), args
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_period_invalid_arg_usage():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            for args in (["abc"], ["1", "2"]):
+                ev = _CmdEvent()
+                async for _ in plugin.player_handler.period_status(ev, args):
+                    pass
+                assert ev.results[0].startswith("用法: /成长 期"), args
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_period_detail_truncation(monkeypatch):
+    import astrbot_plugin_whleague_growth_system.handlers.player as player_mod
+
+    monkeypatch.setattr(player_mod, "_PERIOD_DETAIL_MAX_ROWS", 3)
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            async def _tx(conn):
+                for i in range(5):
+                    await dao.upsert_player(conn, f"p{i}", f"球员{i}", "A队", "admin")
+            await service._db.execute_transaction(_tx)
+            ev = _CmdEvent()
+            async for _ in plugin.player_handler.period_status(ev, []):
+                pass
+            assert "其余 2 人" in ev.results[0]
+            assert "/成长 导出" in ev.results[0]
+            assert ev.results[0].count("期初 ") == 3  # 只展示前 3 行明细
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_config_three_way_dispatch():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ah = plugin.admin_handler
+            # 无参：全量分组，覆盖全部 26 键
+            ev = _CmdEvent("成长 配置", admin=True)
+            async for _ in ah.config(ev, []):
+                pass
+            text = ev.results[0]
+            assert text.startswith("【成长系统配置】")
+            for group in ("基础", "规则与成长期", "展示与转发", "导入·列位", "导入·安全"):
+                assert f"▸ {group}" in text
+            for key in DEFAULT_CONFIG:
+                assert key in text, key
+            # 单键
+            ev2 = _CmdEvent("成长 配置 rank_page_size", admin=True)
+            async for _ in ah.config(ev2, ["rank_page_size"]):
+                pass
+            assert ev2.results[0] == "rank_page_size = 10"
+            # 未知键
+            ev3 = _CmdEvent("成长 配置 nope", admin=True)
+            async for _ in ah.config(ev3, ["nope"]):
+                pass
+            assert "未知配置项: nope" in ev3.results[0]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_config_set_preserves_spaces():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ev = _CmdEvent("成长 配置 group_whitelist 111, 222", admin=True)
+            async for _ in plugin.admin_handler.config(
+                ev, ["group_whitelist", "111,", "222"]
+            ):
+                pass
+            assert "✅ 配置已更新: group_whitelist" in ev.results[0]
+            assert plugin.config_cache["group_whitelist"] == ["111", "222"]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_import_three_way_dispatch():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ah = plugin.admin_handler
+            # 无参：空列表 + 用法提示
+            ev = _CmdEvent("成长 导入", admin=True)
+            async for _ in ah.import_files(ev, []):
+                pass
+            assert "暂无待确认的导入。" in ev.results[0]
+            assert "用法: /成长 导入 <文件名>" in ev.results[0]
+            # 确认 保留字：缺文件名 → usage
+            ev2 = _CmdEvent("成长 导入 确认", admin=True)
+            async for _ in ah.import_files(ev2, ["确认"]):
+                pass
+            assert "用法: /成长 导入 确认 <文件名> [类型]" in ev2.results[0]
+            # 预览：带类型前缀但文件不存在 → 报错含文件名
+            ev3 = _CmdEvent("成长 导入 规则_不存在.json", admin=True)
+            async for _ in ah.import_files(ev3, ["规则_不存在.json"]):
+                pass
+            assert "规则_不存在.json" in ev3.results[0]
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
+def test_find_by_name_shared_semantics():
+    from astrbot_plugin_whleague_growth_system.utils.security import find_by_name, normalize_name
+
+    players = [
+        {"player_uid": "p01", "name": "Van Dijk"},
+        {"player_uid": "p02", "name": "Messi"},
+        {"player_uid": "p03", "name": "Smith"},
+        {"player_uid": "p04", "name": "Smith"},
+    ]
+    index = {}
+    for p in players:
+        index.setdefault(normalize_name(p["name"]), []).append(p)
+    # 归一化精确（大小写/空格差异）
+    hits, exact = find_by_name("van dijk", players)
+    assert [h["player_uid"] for h in hits] == ["p01"] and exact is True
+    # 预建索引路径与逐个扫描路径结果一致
+    hits2, exact2 = find_by_name("VAN DIJK", players, index)
+    assert hits2 == hits and exact2 is True
+    # 模糊容错（1 处字母差异）
+    hits3, exact3 = find_by_name("Van Dyjk", players)
+    assert [h["player_uid"] for h in hits3] == ["p01"] and exact3 is False
+    # 多候选（精确同名）
+    hits4, exact4 = find_by_name("smith", players)
+    assert {h["player_uid"] for h in hits4} == {"p03", "p04"} and exact4 is True
+    # 未命中
+    hits5, exact5 = find_by_name("无此人", players)
+    assert hits5 == [] and exact5 is False
+
+
+def test_dispatch_import_confirm_via_keyword():
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ev = _CmdEvent("成长 导入 确认 规则_不存在.json", admin=True)
+            await _dispatch(plugin, ev)
+            assert any("规则_不存在.json" in t for t in ev.results)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())

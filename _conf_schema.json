@@ -25,13 +25,13 @@
   },
   "rank_page_size": {
     "description": "排行每页条数",
-    "hint": "/成长排行 每页显示的球员数量。",
+    "hint": "/成长 排行 每页显示的球员数量。",
     "type": "int",
     "default": 10
   },
   "import_col_type": {
     "description": "规则表类型列位",
-    "hint": "CSV/Excel 规则表中行类型所在列（1 起，0 表示无此列），取值 stat/milestone/level。",
+    "hint": "CSV/Excel 规则表中行类型所在列（1 起，0 表示无此列），取值 stat/band/milestone/repeat/level。",
     "type": "int",
     "default": 1
   },

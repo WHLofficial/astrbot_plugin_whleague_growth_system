@@ -122,3 +122,19 @@ def name_similar(a: str, b: str) -> bool:
         return False
     limit = 2 if (len(x) >= 10 or len(y) >= 10) else 1
     return _edit_distance(x, y) <= limit
+
+
+def find_by_name(ref: str, players: list, exact_index: dict | None = None) -> tuple:
+    """在球员列表中按姓名查找：归一化精确命中优先，否则长度分级模糊容错。
+
+    exact_index 为可选的 归一化姓名→[球员] 预建索引（批量导入场景免于逐行扫描）。
+    返回 (命中球员列表, 是否精确命中)；未命中返回 ([], False)。
+    """
+    key = normalize_name(ref)
+    if exact_index is not None:
+        exact = exact_index.get(key) or []
+    else:
+        exact = [p for p in players if normalize_name(p["name"]) == key]
+    if exact:
+        return exact, True
+    return [p for p in players if name_similar(p["name"], ref)], False

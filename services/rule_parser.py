@@ -446,7 +446,7 @@ def parse_rule_table(rows: list, cfg: dict, default_level_xp: int) -> dict:
 
 
 def format_rule(rule: dict) -> str:
-    """将规范结构格式化为可读文本（用于预览与 /成长规则）。"""
+    """将规范结构格式化为可读文本（用于预览与 /成长 规则）。"""
     from ..utils.security import fmt_xp
 
     lines = []
