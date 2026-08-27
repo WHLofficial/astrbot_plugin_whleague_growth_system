@@ -46,9 +46,23 @@ CREATE TABLE matches (
     result TEXT DEFAULT '',
     score TEXT DEFAULT ''
 );
+CREATE TABLE round_names (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    season_number INTEGER NOT NULL,
+    competition TEXT NOT NULL DEFAULT '联赛',
+    token TEXT NOT NULL,
+    round_no INTEGER NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    UNIQUE(season_number, competition, token)
+);
 INSERT INTO league_state (id, season_number, window_seq, current_round)
 VALUES (1, 7, 3, 5);
 INSERT INTO season_names VALUES (7, '黄金一代');
+INSERT INTO round_names (season_number, competition, token, round_no) VALUES
+    (7, '联赛', '顶级3', 1),
+    (7, '联赛', '顶级4', 2),
+    (7, '冠军杯', '小组赛第1轮', 1),
+    (6, '联赛', '顶级9', 9);
 """
 
 
@@ -56,13 +70,14 @@ def _make_revenue_db(path):
     conn = sqlite3.connect(path)
     conn.executescript(_REVENUE_SQL)
     conn.executemany(
-        "INSERT INTO matches (season_number, window_seq, round_no, home_team, away_team,"
-        " weather, result, score) VALUES (?,?,?,?,?,?,?,?)",
+        "INSERT INTO matches (season_number, window_seq, round_no, competition,"
+        " home_team, away_team, weather, result, score) VALUES (?,?,?,?,?,?,?,?,?)",
         [
-            (7, 3, 1, "A队", "B队", "晴", "W", "2-1"),
-            (7, 3, 1, "C队", "D队", "", "", ""),
-            (7, 3, 2, "A队", "C队", "雨", "", ""),
-            (6, 8, 9, "E队", "F队", "", "D", "0-0"),
+            (7, 3, 1, "联赛", "A队", "B队", "晴", "W", "2-1"),
+            (7, 3, 1, "联赛", "C队", "D队", "", "", ""),
+            (7, 3, 2, "联赛", "A队", "C队", "雨", "", ""),
+            (7, 3, 1, "冠军杯", "A队", "G队", "", "L", "0-2"),
+            (6, 8, 9, "联赛", "E队", "F队", "", "D", "0-0"),
         ],
     )
     conn.commit()
@@ -95,22 +110,40 @@ class TestRevenueBridge:
 
     def test_list_rounds_aggregates_played(self, revenue_db):
         bridge = RevenueBridge({"revenue_db_path": revenue_db})
-        rounds = {r["round_no"]: r for r in call(bridge.list_rounds())}
-        assert rounds[1]["total"] == 2
-        assert rounds[1]["played"] == 1
-        assert rounds[2]["played"] == 0
-        # 文字前缀轮次原样保留
-        assert str(rounds[9]) != "" and rounds[9]["played"] == 1
+        rounds = {(r["competition"], r["round_no"]): r for r in call(bridge.list_rounds())}
+        assert rounds[("联赛", 1)]["total"] == 2
+        assert rounds[("联赛", 1)]["played"] == 1
+        assert rounds[("联赛", 2)]["played"] == 0
+        # 赛事分开聚合：冠军杯的第1轮与联赛第1轮是不同的轮
+        assert rounds[("冠军杯", 1)]["total"] == 1
+        assert rounds[("冠军杯", 1)]["played"] == 1
+        # 旧赛季（6季8窗）不混入当前窗口
+        assert ("联赛", 9) not in rounds
         call(bridge.close())
 
     def test_list_fixtures_filters(self, revenue_db):
         bridge = RevenueBridge({"revenue_db_path": revenue_db})
         rnd2 = call(bridge.list_fixtures(round_no=2))
         assert [f["home_team"] for f in rnd2] == ["A队"]
+        # 赛事过滤：冠军杯第1轮独立于联赛第1轮
+        cup = call(bridge.list_fixtures(round_no=1, competition="冠军杯"))
+        assert [f["away_team"] for f in cup] == ["G队"]
         played = call(bridge.list_fixtures(played=True))
         assert len(played) == 2
         unplayed = call(bridge.list_fixtures(played=False))
         assert {f["away_team"] for f in unplayed} == {"D队", "C队"}
+        all_now = call(bridge.list_fixtures())
+        assert all(f["season_number"] == 7 and f["window_seq"] == 3 for f in all_now)
+        call(bridge.close())
+
+    def test_resolve_round_token(self, revenue_db):
+        bridge = RevenueBridge({"revenue_db_path": revenue_db})
+        assert call(bridge.resolve_round_token("顶级3")) == {"competition": "联赛", "round_no": 1}
+        # 后缀匹配：省略赛事前缀中缀仍可命中
+        assert call(bridge.resolve_round_token("第1轮")) == {"competition": "冠军杯", "round_no": 1}
+        # 旧赛季同名轮次不参与解析
+        assert call(bridge.resolve_round_token("顶级9")) is None
+        assert call(bridge.resolve_round_token("不存在的轮次")) is None
         call(bridge.close())
 
     def test_get_fixture_lookup_and_missing(self, revenue_db):

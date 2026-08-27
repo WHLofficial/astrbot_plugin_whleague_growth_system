@@ -112,30 +112,54 @@ class RevenueBridge:
             state["season_name"] = ""
         return state
 
+    async def _current_window(self) -> dict | None:
+        """当前赛季/窗口（取不到返回 None，调用方不过滤）。"""
+        return await self.get_league_state()
+
     async def list_rounds(self) -> list[dict] | None:
-        """按轮次聚合：场次总数与已录比分数。保留文字前缀轮次原样返回。"""
-        return await self._query(
-            """
-            SELECT round_no,
+        """按（赛事, 轮次）聚合：场次总数与已录比分数，仅当前赛季窗口。
+
+        主场库轮次号按（赛季, 赛事）各自分配，联赛/杯赛的同号轮不是同一轮。
+        """
+        state = await self._current_window()
+        sql = """
+            SELECT competition,
+                   round_no,
                    COUNT(*) AS total,
                    SUM(CASE WHEN result IS NOT NULL AND result != '' THEN 1 ELSE 0 END)
                        AS played
             FROM matches
-            GROUP BY round_no
-            ORDER BY round_no
-            """
-        )
+        """
+        params: list = []
+        if state and state.get("season_number") is not None:
+            sql += " WHERE season_number = ? AND window_seq = ?"
+            params = [state["season_number"], state["window_seq"]]
+        sql += " GROUP BY competition, round_no ORDER BY competition, round_no"
+        return await self._query(sql, params)
 
     async def list_fixtures(
-        self, round_no: int | None = None, played: bool | None = None
+        self,
+        round_no: int | None = None,
+        played: bool | None = None,
+        competition: str | None = None,
     ) -> list[dict] | None:
-        """列出对阵（可选按轮次/是否已赛过滤），按轮次与主队排序。"""
+        """列出对阵（可选按赛事/轮次/是否已赛过滤），仅当前赛季窗口。"""
         sql = (
             "SELECT id, season_number, window_seq, round_no, competition, "
             "home_team, away_team, weather, result, score "
             "FROM matches"
         )
-        conds, params = [], []
+        conds: list[str] = []
+        params: list = []
+        state = await self._current_window()
+        if state and state.get("season_number") is not None:
+            conds.append("season_number = ?")
+            params.append(state["season_number"])
+            conds.append("window_seq = ?")
+            params.append(state["window_seq"])
+        if competition:
+            conds.append("competition = ?")
+            params.append(competition)
         if round_no is not None:
             conds.append("round_no = ?")
             params.append(round_no)
@@ -145,8 +169,28 @@ class RevenueBridge:
             conds.append("(result IS NULL OR result = '')")
         if conds:
             sql += " WHERE " + " AND ".join(conds)
-        sql += " ORDER BY round_no, id"
+        sql += " ORDER BY competition, round_no, id"
         return await self._query(sql, params)
+
+    async def resolve_round_token(self, token: str) -> dict | None:
+        """把文字轮次（如「顶级9」）解析为 {competition, round_no}，按当前赛季。
+
+        精确匹配优先，其次取以该文本结尾的轮次名（用户省略「第N轮」等中缀）。
+        """
+        state = await self._current_window()
+        sql = "SELECT competition, round_no FROM round_names WHERE token = ?"
+        params: list = [token]
+        if state and state.get("season_number") is not None:
+            sql += " AND season_number = ?"
+            params.append(state["season_number"])
+        rows = await self._query(sql + " LIMIT 1", params)
+        if rows:
+            return rows[0]
+        rows = await self._query(
+            sql.replace("token = ?", "token LIKE ?") + " ORDER BY round_no LIMIT 1",
+            [f"%{token}"] + params[1:],
+        )
+        return rows[0] if rows else None
 
     async def get_fixture(self, fixture_key: str) -> dict | None:
         """取单场对阵详情；找不到返回 {}，库不可用返回 None。"""

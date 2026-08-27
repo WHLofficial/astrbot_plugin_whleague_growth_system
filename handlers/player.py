@@ -266,7 +266,7 @@ class PlayerHandler:
     async def show_fixtures(
         self, event: AstrMessageEvent, args: list[str] | None = None
     ) -> AsyncGenerator[MessageEventResult, None]:
-        """查看联赛赛程：/成长 赛程 [轮次]；轮次支持文字前缀（如「顶级9」）。"""
+        """查看联赛赛程：/成长 赛程 [轮次]；数字=轮次号，文字=轮次名（如「顶级9」）。"""
         from ..services.revenue_bridge import RevenueBridge
 
         bridge: RevenueBridge = self._plugin.revenue_bridge
@@ -278,17 +278,23 @@ class PlayerHandler:
             return
         state = await bridge.get_league_state()
         raw = (args[0].strip() if args else "")
-        rounds = await bridge.list_rounds()
-        fixtures = await bridge.list_fixtures(
-            round_no=int(raw) if raw.isdigit() and raw else None
-        )
+        # 主场库轮次号按（赛季, 赛事）各自分配：文字轮次先解析出（赛事, 轮次号）
+        if raw and not raw.isdigit():
+            target = await bridge.resolve_round_token(raw)
+            if target is None:
+                yield event.plain_result(
+                    f"未找到轮次「{raw}」。可输入轮次名（如 顶级9、小组赛第3轮）或数字轮次。"
+                )
+                return
+            fixtures = await bridge.list_fixtures(
+                round_no=int(target["round_no"]),
+                competition=str(target["competition"]),
+            )
+        else:
+            fixtures = await bridge.list_fixtures(round_no=int(raw) if raw else None)
         if fixtures is None:
             yield event.plain_result("读取赛程失败，请检查主场插件数据库。")
             return
-
-        def round_label(no) -> str:
-            text = str(no)
-            return text
 
         lines = []
         if state:
@@ -300,42 +306,31 @@ class PlayerHandler:
             )
         else:
             lines.append("【赛程】")
-        selected: list[dict] = []
+        # 按（赛事, 轮次）分组输出，非联赛赛事在轮次标题标注
+        by_group: dict[tuple[str, int], list] = {}
         for fx in fixtures:
             played = bool(fx.get("result"))
-            if raw and not raw.isdigit() and str(fx.get("round_no")) != raw:
-                continue  # 文字前缀轮次：按字符串原样过滤
             if played and fx.get("score"):
-                selected.append({**fx, "_tag": f"✅ {fx['home_team']} {fx['score']} {fx['away_team']}"})
+                tag = f"✅ {fx['home_team']} {fx['score']} {fx['away_team']}"
             elif played:
-                selected.append({**fx, "_tag": f"✔ 已录赛果 {fx['home_team']} vs {fx['away_team']}"})
+                tag = f"✔ 已录赛果 {fx['home_team']} vs {fx['away_team']}"
             else:
-                selected.append({**fx, "_tag": f"⬜ {fx['home_team']} vs {fx['away_team']}"})
-        # 按轮次分组输出
-        by_round: dict[str, list] = {}
-        for fx in selected:
-            by_round.setdefault(round_label(fx["round_no"]), []).append(fx)
-        if raw:
-            shown_rounds = [r for r in by_round]
-        else:
-            shown_rounds = sorted(by_round)
-        for r in shown_rounds[:8]:
-            items = by_round[r]
-            total_played = sum(1 for it in items if it.get("result"))
-            lines.append(f"— 第{r}轮（已打{total_played}/{len(items)}）—")
-            comp_seen = ""
+                tag = f"⬜ {fx['home_team']} vs {fx['away_team']}"
+            weather = str(fx.get("weather") or "").strip()
+            if weather:
+                tag += f"（{weather}）"
+            key = (str(fx.get("competition") or "联赛"), int(fx.get("round_no") or 0))
+            by_group.setdefault(key, []).append({**fx, "_tag": tag})
+        shown_groups = sorted(by_group)
+        for comp, no in shown_groups[:8]:
+            items = by_group[(comp, no)]
+            played_n = sum(1 for it in items if it.get("result"))
+            comp_suffix = f"·{comp}" if comp != "联赛" else ""
+            lines.append(f"— 第{no}轮{comp_suffix}（已打{played_n}/{len(items)}）—")
             for it in items:
-                tag = it["_tag"]
-                comp = str(it.get("competition") or "")
-                prefix = f"[{comp}] " if comp != "联赛" else ""
-                weather = str(it.get("weather") or "").strip()
-                if weather:
-                    tag += f"（{weather}）"
-                lines.append(f"· {prefix}{tag}")
-            if len(shown_rounds) > 8:
-                continue
-        if len(by_round) > 8 and len(lines) < 400:
-            lines.append(f"… 其余 {len(by_round) - 8} 轮未展示，可指定轮次查看: /成长 赛程 <轮次>")
-        if not lines[1:] and not state:
-            lines.append("暂无赛程数据。")
+                lines.append(f"· {it['_tag']}")
+        if len(shown_groups) > 8:
+            lines.append(f"… 其余 {len(shown_groups) - 8} 轮未展示，可指定轮次查看: /成长 赛程 <轮次>")
+        if not lines[1:]:
+            lines.append("当前窗口暂无赛程。" if state else "暂无赛程数据。")
         yield event.plain_result("\n".join(lines))

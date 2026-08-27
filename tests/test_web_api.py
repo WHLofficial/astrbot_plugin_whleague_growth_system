@@ -411,10 +411,11 @@ def _make_revenue_db(path):
             result TEXT DEFAULT '',
             score TEXT DEFAULT ''
         );
-        INSERT INTO matches (season_number, window_seq, round_no, home_team, away_team, weather, result, score) VALUES
-            (7, 2, 1, 'A队', 'B队', '晴', 'home', '2-1'),
-            (7, 2, 1, 'C队', 'D队', '', '', ''),
-            (7, 2, 2, 'A队', 'E队', '', '', '');
+        INSERT INTO matches (season_number, window_seq, round_no, competition, home_team, away_team, weather, result, score) VALUES
+            (7, 2, 1, '联赛', 'A队', 'B队', '晴', 'home', '2-1'),
+            (7, 2, 1, '联赛', 'C队', 'D队', '', '', ''),
+            (7, 2, 2, '联赛', 'A队', 'E队', '', '', ''),
+            (7, 2, 1, '冠军杯', 'A队', 'G队', '', 'away', '0-3');
         CREATE TABLE league_state (
             id INTEGER PRIMARY KEY CHECK (id=1),
             season_number INTEGER, window_seq INTEGER, current_round INTEGER
@@ -468,17 +469,24 @@ def test_fixtures_rounds_and_list(rev_api):
     assert data["available"] is True
     assert data["state"]["season_number"] == 7
     assert data["state"]["season_name"] == "秋赛"
-    assert [r["round_no"] for r in data["rounds"]] == [1, 2]
-    assert data["rounds"][0]["total"] == 2 and data["rounds"][0]["played"] == 1
+    # 赛事分开聚合：联赛与冠军杯的第1轮是不同的轮
+    assert [(r["competition"], r["round_no"]) for r in data["rounds"]] == [
+        ("冠军杯", 1), ("联赛", 1), ("联赛", 2),
+    ]
+    assert data["rounds"][1]["total"] == 2 and data["rounds"][1]["played"] == 1
 
-    set_request(query={"round": "1"}, username="t")
+    set_request(query={"round": "1", "competition": "联赛"}, username="t")
     res = call(api.fixtures_list())["data"]
     assert {f["fixture_key"] for f in res["fixtures"]} == {"1", "2"}
     assert all(f["season_number"] == 7 for f in res["fixtures"])
 
+    set_request(query={"round": "1", "competition": "冠军杯"}, username="t")
+    cup = call(api.fixtures_list())["data"]["fixtures"]
+    assert [f["away_team"] for f in cup] == ["G队"]
+
     set_request(query={"played": "1"}, username="t")
     only_played = call(api.fixtures_list())["data"]["fixtures"]
-    assert {f["fixture_key"] for f in only_played} == {"1"}
+    assert {f["fixture_key"] for f in only_played} == {"1", "4"}
 
     set_request(query={"round": "x"}, username="t")
     with pytest.raises(ValueError):

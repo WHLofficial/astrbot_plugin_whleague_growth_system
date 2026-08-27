@@ -275,9 +275,12 @@ class WebApi:
                 raise ValueError(f"无效的轮次号: {round_raw}") from None
         played_raw = (request.query.get("played", "") or "").strip()
         played: bool | None = True if played_raw == "1" else False if played_raw == "0" else None
+        competition = (request.query.get("competition", "") or "").strip()
         if not await bridge.is_available():
             return json_response({"available": False, "fixtures": []})
-        rows = await bridge.list_fixtures(round_no=round_no, played=played)
+        rows = await bridge.list_fixtures(
+            round_no=round_no, played=played, competition=competition or None
+        )
         if rows is None:
             return json_response({"available": False, "fixtures": []})
         return json_response(

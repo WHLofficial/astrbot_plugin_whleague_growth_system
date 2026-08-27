@@ -2,7 +2,7 @@
 
 import * as api from "./api.js";
 import {
-  el, esc, fmtXp, renderTable, toast, errorNote,
+  el, esc, fmtXp, renderTable, toast, errorNote, openDrawer,
 } from "./ui.js";
 
 function todayStr() {
@@ -28,6 +28,7 @@ export async function render(root, ctx) {
   } catch { /* 无规则时仅浏览赛程 */ }
 
   let roundsData = null;
+  let currentComp = null;
   let currentRound = null;
 
   await loadRounds();
@@ -59,9 +60,12 @@ export async function render(root, ctx) {
     }
     drawChips();
     if (currentRound === null) {
-      // 默认选中最早还有未打比赛的轮次，否则第一轮
-      const pending = roundsData.rounds.find((r) => r.played < r.total);
-      currentRound = String(pending ? pending.round_no : roundsData.rounds[0].round_no);
+      // 默认选中最早还有未打比赛的（赛事,轮次），否则第一个小节
+      const rounds = roundsData.rounds || [];
+      const pending = rounds.find((r) => r.played < r.total);
+      const first = pending || rounds[0];
+      currentComp = first.competition || "联赛";
+      currentRound = String(first.round_no);
     }
     await loadFixtures();
   }
@@ -94,20 +98,33 @@ export async function render(root, ctx) {
 
   function drawChips() {
     board.innerHTML = "";
+    const rounds = roundsData.rounds || [];
+    const comps = [...new Set(rounds.map((r) => r.competition || "联赛"))];
+    const multi = comps.length > 1 || comps[0] !== "联赛";
     const zone = el(`<div class="round-chips" role="tablist"></div>`);
-    for (const r of roundsData.rounds) {
-      const no = String(r.round_no);
-      const chip = el(`<button type="button" class="round-chip${no === currentRound ? " active" : ""}" data-round="${esc(no)}">
-        <b>第 ${esc(no)} 轮</b><small>${r.played}/${r.total}</small>
-      </button>`);
-      chip.addEventListener("click", async () => {
-        currentRound = no;
-        for (const c of zone.querySelectorAll(".round-chip")) {
-          c.classList.toggle("active", c.dataset.round === no);
-        }
-        await loadFixtures();
-      });
-      zone.appendChild(chip);
+    for (const comp of comps) {
+      if (multi) {
+        zone.appendChild(el(`<div class="fx-comp">${esc(comp)}</div>`));
+      }
+      for (const r of rounds.filter((x) => (x.competition || "联赛") === comp)) {
+        const no = String(r.round_no);
+        const active = no === currentRound && (r.competition || "联赛") === (currentComp || "联赛");
+        const chip = el(`<button type="button" class="round-chip${active ? " active" : ""}" data-round="${esc(no)}" data-comp="${esc(comp)}">
+          <b>第 ${esc(no)} 轮</b><small>${r.played}/${r.total}</small>
+        </button>`);
+        chip.addEventListener("click", async () => {
+          currentComp = comp;
+          currentRound = no;
+          for (const c of zone.querySelectorAll(".round-chip")) {
+            c.classList.toggle(
+              "active",
+              c.dataset.round === no && c.dataset.comp === comp
+            );
+          }
+          await loadFixtures();
+        });
+        zone.appendChild(chip);
+      }
     }
     board.appendChild(zone);
     board.appendChild(el(`<div id="fx-list"></div>`));
@@ -121,7 +138,10 @@ export async function render(root, ctx) {
     zone.innerHTML = "";
     let rows;
     try {
-      const data = await api.get("fixtures", { round: currentRound });
+      const data = await api.get("fixtures", {
+        round: currentRound,
+        competition: currentComp || "",
+      });
       rows = (data && data.fixtures) || [];
     } catch (e) {
       zone.appendChild(errorNote(e.message));
