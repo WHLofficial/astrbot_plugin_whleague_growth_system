@@ -121,7 +121,8 @@ export async function render(root, ctx) {
     zone.innerHTML = "";
     let rows;
     try {
-      rows = await api.get("fixtures", { round: currentRound });
+      const data = await api.get("fixtures", { round: currentRound });
+      rows = (data && data.fixtures) || [];
     } catch (e) {
       zone.appendChild(errorNote(e.message));
       return;

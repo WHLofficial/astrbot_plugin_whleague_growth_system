@@ -9,6 +9,9 @@
 
   --radius: 6px;
   --nav-w: 200px;
+
+  /* 主按钮前景：亮主题白字，暗主题换深字（token 化，避免压过 secondary/danger 变体色） */
+  --btn-primary-fg: #ffffff;
 }
 
 html[data-theme="light"] {
@@ -33,6 +36,7 @@ html[data-theme="dark"] {
   --line: #26302a;
   --card: #171d17;
   --muted: #97a29a;
+  --btn-primary-fg: #10140f;
 }
 
 * { box-sizing: border-box; }
@@ -306,10 +310,9 @@ input:focus, select:focus, textarea:focus {
   border-radius: var(--radius);
   border: 1px solid var(--pitch);
   background: var(--pitch);
-  color: #fff;
+  color: var(--btn-primary-fg);
   cursor: pointer;
 }
-html[data-theme="dark"] .btn { color: #10140f; }
 .btn:hover { filter: brightness(1.08); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 

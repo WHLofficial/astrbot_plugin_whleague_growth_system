@@ -17,6 +17,11 @@
 - 仅**当前成长期**的数据可在 WebUI 修改；历史期数据锁定（结算不可变）。
 - 一次性里程碑达成后不因数值降低而回撤——重复录入覆盖与文件重导为同一语义。
 
+### 修复
+
+- WebUI 赛程页签：轮次对阵列表错误解包 `fixtures` 响应（data 为 `{available, fixtures}` 对象却按数组取 `length`），导致每轮恒显「该轮暂无对阵」。
+- WebUI 暗色主题：`html[data-theme="dark"] .btn` 的深色文字规则压过 `.btn.secondary` / `.btn.danger` 变体色，透明底按钮（成长期页签的「结算表」「推进成长期」等）在夜间变成深字叠深卡几乎不可见；改为 `--btn-primary-fg` token，变体色恢复。
+
 ### 变更
 
 - `db/schema.py` SCHEMA_VERSION 4→5：存量库启动时自动 `ALTER TABLE` 补列并建部分唯一索引，幂等可重复执行。
