@@ -175,7 +175,8 @@ class GrowthImportService:
         default_level_xp = round(float(self._cfg_get("default_level_xp", 100) or 100), 1)
         ext = file_path.suffix.lower()
         if ext == ".json":
-            return rule_parser.parse_rule_json(_parse_json(file_path), default_level_xp)
+            data = _parse_json(file_path)
+            return rule_parser.normalize_rule(data, default_level_xp)
         rows = self._read_rows(file_path)
         return rule_parser.parse_rule_table(rows, self._cfg_get, default_level_xp)
 

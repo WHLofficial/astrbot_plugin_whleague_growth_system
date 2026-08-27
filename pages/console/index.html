@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN" data-theme="light">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>成长系统管理台</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="shell">
+    <header class="masthead">
+      <h1>成长系统</h1>
+      <span id="period-badge" class="badge-period">成长期加载中…</span>
+      <span id="pending-badge" class="badge-pending" hidden></span>
+      <button id="theme-toggle" class="theme-toggle" type="button">主题</button>
+    </header>
+
+    <div class="body-row">
+      <nav class="sidenav" id="sidenav" aria-label="页面导航"></nav>
+      <main class="content" id="content">
+        <section class="view"><p class="page-sub">正在连接插件服务…</p></section>
+      </main>
+    </div>
+  </div>
+
+  <div id="toast-zone"></div>
+  <div id="layer-root"></div>
+
+  <!-- bridge-sdk 由服务端自动注入；显式声明仅为本地静态预览兜底 -->
+  <script src="/api/plugin/page/bridge-sdk.js"></script>
+  <script type="module" src="./js/app.js"></script>
+</body>
+</html>

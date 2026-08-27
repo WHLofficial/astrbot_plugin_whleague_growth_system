@@ -99,6 +99,9 @@ class GrowthSystemPlugin(Star):
         self.player_handler = PlayerHandler(self)
         self.admin_handler = AdminHandler(self)
         self._subs = self._build_subs()
+        from .web_api import WebApi
+
+        self.web_api = WebApi(self)
         logger.info("Growth system plugin initialized (v%s).", PLUGIN_VERSION)
 
     def _build_subs(self) -> dict:

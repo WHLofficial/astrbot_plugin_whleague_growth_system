@@ -2,6 +2,21 @@
 
 本项目的版本号以 `metadata.yaml` / `config/defaults.py`（`PLUGIN_VERSION`）为准。
 
+## [1.1.0] - 2026-09-15
+
+### 新增：WebUI 管理台（pages/console）
+
+- 按插件页面规范新增管理台页面：Dashboard → 插件详情 → 「成长系统管理台」即可打开（iframe 受限沙箱，经 bridge-sdk 调用插件 API；无需暴露额外端口）。
+- 七个页签：总览（统计卡/近期比赛）、球员（名册搜索/排行榜切换/详情抽屉含经验刻度条）、比赛（按当前规则动态生成数据项的单场录入）、导入（上传→预览→确认三步流 + 待确认列表驳回）、成长期（历期汇总/结算表抽屉/推进二次确认）、规则（数据项分段计分与里程碑展示）、配置（按功能域分组行内编辑，复用聊天侧同一套校验强转）。
+- 新增后端 `web_api.py`：18 个 REST 端点注册于 Dashboard 插件扩展通道（`/{PLUGIN_NAME}/...`），写操作入参统一走 `parse_num/parse_date/sanitize_*/validate_and_cast`，与聊天命令行为一致；导出文件经 `file_response` 直接下载。
+- 页面视觉遵循「联赛秩序册 / 夜场记分牌」设计令牌：宋体标题、等宽数字、草皮绿主色、双主题跟随 WebUI（`data-theme`），窄屏自动折叠为顶部标签。
+- `.astrbot-plugin/i18n/zh-CN.json` 注册页面标题与描述。
+
+### 变更
+
+- `db/dao.py` 新增 `search_players / recent_matches / count_overview` 三个查询（仅服务 WebUI 总览与搜索）。
+- `main.py` 在 `initialize()` 末尾实例化 `WebApi`，随插件加载注册全部端点。
+
 ## [1.0.0] - 2026-08-22
 
 命令面定稿版本（大规模上线基准）：自本版本起命令结构承诺稳定，新增能力走 1.x（新子命令），再破坏走 2.0.0。

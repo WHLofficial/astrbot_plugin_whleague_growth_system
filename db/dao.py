@@ -185,6 +185,51 @@ class GrowthDAO:
             (page_size, (page - 1) * page_size),
         )
 
+    # ─── WebUI 专用查询 ────────────────────────────────────
+
+    async def search_players(self, keyword: str, page: int, page_size: int) -> tuple:
+        """按 UID / 名字 / 球队模糊搜索在册球员，返回 (行列表, 总数)。"""
+        like = f"%{keyword}%"
+        cond = "active=1 AND (player_uid LIKE ? OR name LIKE ? OR team LIKE ?)"
+        total = await self._db.fetchone(
+            f"SELECT COUNT(*) AS c FROM players WHERE {cond}", (like, like, like)
+        )
+        rows = await self._db.fetchall(
+            f"SELECT * FROM players WHERE {cond} ORDER BY player_uid LIMIT ? OFFSET ?",
+            (like, like, like, page_size, (page - 1) * page_size),
+        )
+        return rows, int(total["c"])
+
+    async def recent_matches(self, limit: int = 20) -> list:
+        """近期比赛（含出场人数与经验合计），供比赛页与总览使用。"""
+        return await self._db.fetchall(
+            """
+            SELECT m.id, m.match_date, m.opponent,
+                   COUNT(a.id) AS player_count,
+                   COALESCE(SUM(a.total_xp), 0) AS xp_total
+            FROM matches m
+            LEFT JOIN appearances a ON a.match_id = m.id
+            GROUP BY m.id
+            ORDER BY m.match_date DESC, m.id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+
+    async def count_overview(self) -> dict:
+        """总览聚合：球员数、比赛数、出场数、当前期经验池、生涯经验总和。"""
+        row = await self._db.fetchone(
+            """
+            SELECT
+              (SELECT COUNT(*) FROM players WHERE active=1) AS player_count,
+              (SELECT COUNT(*) FROM matches) AS match_count,
+              (SELECT COUNT(*) FROM appearances) AS appearance_count,
+              (SELECT COALESCE(SUM(xp), 0) FROM players WHERE active=1) AS current_xp,
+              (SELECT COALESCE(SUM(xp_total), 0) FROM players WHERE active=1) AS career_xp
+            """
+        )
+        return dict(row)
+
     async def iter_active_players(self, conn) -> list:
         async with conn.execute(
             "SELECT player_uid, level, xp, xp_total FROM players WHERE active=1"
