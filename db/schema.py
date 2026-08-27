@@ -1,6 +1,6 @@
 from astrbot.api import logger
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SQL_CREATE_TABLES = r"""
 
@@ -32,10 +32,15 @@ CREATE TABLE IF NOT EXISTS matches (
     match_date TEXT NOT NULL,
     opponent TEXT NOT NULL DEFAULT '',
     created_by TEXT NOT NULL DEFAULT '',
-    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    created_at TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    rev_fixture_key TEXT,
+    rev_side TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_matches_date_opponent ON matches(match_date, opponent);
+
+-- idx_matches_rev 不放在此处：存量 v4 库的 matches 尚无 rev_* 列，
+-- executescript 先建索引会因缺列失败；列补齐后由 _ensure_rev_binding 创建。
 
 CREATE TABLE IF NOT EXISTS appearances (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -138,6 +143,8 @@ async def init_schema(db_manager):
     db = db_manager.conn
     async with db_manager.lock:
         await db.executescript(SQL_CREATE_TABLES)
+        # 新库列已随建表语句生成，此调用为幂等补齐；存量 v4 库在此完成 ALTER。
+        await _ensure_rev_binding(db)
         await db.commit()
 
     cur = await db.execute("SELECT value FROM plugin_config WHERE key='schema_version'")
@@ -181,6 +188,10 @@ async def init_schema(db_manager):
 
 async def _migrate(db, current_version: int):
     """增量迁移：仅在目标结构缺失时执行，保证可重复运行。"""
+    if current_version < 5:
+        # v4→v5：matches 增加主场赛程绑定列 + 部分唯一索引。
+        await _ensure_rev_binding(db)
+
     if current_version < 4:
         # v3→v4：period_snapshots 表由 executescript 的 CREATE TABLE IF NOT EXISTS 自动补建，
         # 此处仅确认版本号推进。
@@ -199,3 +210,23 @@ async def _migrate(db, current_version: int):
             "SELECT 1, '成长期1', 1 WHERE NOT EXISTS (SELECT 1 FROM growth_periods)"
         )
         await db.commit()
+
+
+async def _ensure_rev_binding(db) -> None:
+    """补齐 matches 的赛程绑定列与部分唯一索引（幂等）。
+
+    一条真实对阵最多两行（主/客视角各自 opponent=对面队名）；部分唯一索引
+    使普通比赛不受约束。新库列已随建表语句生成，此处只补索引；存量库先 ALTER。
+    """
+    cur = await db.execute("PRAGMA table_info(matches)")
+    cols = {row[1] for row in await cur.fetchall()}
+    await cur.close()
+    if "rev_fixture_key" not in cols:
+        await db.execute("ALTER TABLE matches ADD COLUMN rev_fixture_key TEXT")
+    if "rev_side" not in cols:
+        await db.execute("ALTER TABLE matches ADD COLUMN rev_side TEXT")
+    await db.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_matches_rev "
+        "ON matches(rev_fixture_key, rev_side) WHERE rev_fixture_key IS NOT NULL"
+    )
+    await db.commit()

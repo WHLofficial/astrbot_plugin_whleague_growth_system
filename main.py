@@ -30,6 +30,8 @@ _SUBCOMMAND_ALIASES = {
     "预览": "期",
     "排名": "排行",
     "名单": "球员",
+    "赛程表": "赛程",
+    "对阵": "赛程",
     "设置": "配置",
 }
 
@@ -79,6 +81,8 @@ class GrowthSystemPlugin(Star):
         self.growth_service: GrowthService | None = None
         self.import_service: GrowthImportService | None = None
         self.export_service: ExportService | None = None
+        self.revenue_bridge = None
+        self.revenue_hooks = None
         self.player_handler = None
         self.admin_handler = None
         self._subs: dict = {}
@@ -102,6 +106,15 @@ class GrowthSystemPlugin(Star):
         from .web_api import WebApi
 
         self.web_api = WebApi(self)
+
+        # 主场营收插件联动（可选）：只读赛程桥 + 推进事件提醒
+        from .services.revenue_bridge import RevenueBridge
+        from .services.revenue_hooks import RevenueHooks
+
+        self.revenue_bridge = RevenueBridge(self.config_cache)
+        self.revenue_hooks = RevenueHooks(self)
+        await self.revenue_hooks.start()
+
         logger.info("Growth system plugin initialized (v%s).", PLUGIN_VERSION)
 
     def _build_subs(self) -> dict:
@@ -113,6 +126,7 @@ class GrowthSystemPlugin(Star):
             "排行": (self.player_handler.rank, False),
             "球员": (self.player_handler.list_players, False),
             "期": (self.player_handler.period_status, False),
+            "赛程": (self.player_handler.show_fixtures, False),
             "上报": (self.admin_handler.record, True),
             "推进": (self.admin_handler.advance, True),
             "导出": (self.admin_handler.export, True),
@@ -236,6 +250,16 @@ class GrowthSystemPlugin(Star):
     # ═══════════════════════════════════════════════════════
 
     async def terminate(self) -> None:
+        if self.revenue_hooks is not None:
+            try:
+                await self.revenue_hooks.terminate()
+            except Exception:
+                logger.exception("RevenueHooks terminate error")
+        if self.revenue_bridge is not None:
+            try:
+                await self.revenue_bridge.close()
+            except Exception:
+                logger.exception("RevenueBridge close error")
         if self.db is not None:
             await self.db.close()
         logger.info("Growth system plugin terminated.")

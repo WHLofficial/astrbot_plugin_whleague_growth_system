@@ -250,12 +250,80 @@ class GrowthDAO:
         ) as cur:
             return await cur.fetchone()
 
-    async def create_match(self, conn, match_date: str, opponent: str, created_by: str) -> int:
+    async def create_match(
+        self,
+        conn,
+        match_date: str,
+        opponent: str,
+        created_by: str,
+        rev_fixture_key: str | None = None,
+        rev_side: str | None = None,
+    ) -> int:
         cur = await conn.execute(
-            "INSERT INTO matches (match_date, opponent, created_by) VALUES (?, ?, ?)",
-            (match_date, opponent, created_by),
+            "INSERT INTO matches (match_date, opponent, created_by, rev_fixture_key, rev_side) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (
+                match_date,
+                opponent,
+                created_by,
+                str(rev_fixture_key) if rev_fixture_key else None,
+                rev_side,
+            ),
         )
         return cur.lastrowid
+
+    # ─── 主场赛程绑定（rev_fixture_key = 主场库 matches.id）───
+
+    async def get_match_by_fixture(self, conn, rev_fixture_key: str, rev_side: str):
+        async with conn.execute(
+            "SELECT * FROM matches WHERE rev_fixture_key=? AND rev_side=?",
+            (str(rev_fixture_key), rev_side),
+        ) as cur:
+            return await cur.fetchone()
+
+    async def bind_match_fixture(
+        self, conn, match_id: int, rev_fixture_key: str, rev_side: str
+    ) -> None:
+        await conn.execute(
+            "UPDATE matches SET rev_fixture_key=?, rev_side=? WHERE id=?",
+            (str(rev_fixture_key), rev_side, match_id),
+        )
+
+    async def list_fixture_appearances(self, rev_fixture_key: str) -> list:
+        """该真实对阵下全部出场记录（含主客视角行与明细数据项）。"""
+        return await self._db.fetchall(
+            """
+            SELECT a.id AS appearance_id, a.player_uid, a.period_no,
+                   a.stat_xp, a.bonus_xp, a.total_xp, a.created_at,
+                   m.rev_side, m.match_date, p.name AS player_name, p.team AS player_team,
+                   s.stat_key, s.value
+            FROM appearances a
+            JOIN matches m ON m.id = a.match_id
+            JOIN players p ON p.player_uid = a.player_uid
+            LEFT JOIN match_stats s ON s.appearance_id = a.id
+            WHERE m.rev_fixture_key = ?
+            ORDER BY a.player_uid, s.stat_key
+            """,
+            (str(rev_fixture_key),),
+        )
+
+    async def fixture_record_counts(self) -> dict:
+        """已录数据的赛程汇总：{rev_fixture_key: {player_count, xp_total}}。"""
+        rows = await self._db.fetchall(
+            """
+            SELECT m.rev_fixture_key AS fid,
+                   COUNT(DISTINCT a.player_uid) AS player_count,
+                   COALESCE(SUM(a.total_xp), 0) AS xp_total
+            FROM matches m
+            JOIN appearances a ON a.match_id = m.id
+            WHERE m.rev_fixture_key IS NOT NULL
+            GROUP BY m.rev_fixture_key
+            """
+        )
+        return {
+            r["fid"]: {"player_count": int(r["player_count"]), "xp_total": float(r["xp_total"])}
+            for r in rows
+        }
 
     async def get_appearance(self, conn, match_id: int, player_uid: str):
         async with conn.execute(

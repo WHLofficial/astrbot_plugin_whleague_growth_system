@@ -545,3 +545,62 @@ pre.preview {
   font-size: 14px;
   color: var(--sent-off);
 }
+
+/* ─── 赛程页签 ─────────────────────────────────── */
+
+.fx-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.round-chips {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 6px;
+}
+.round-chip {
+  border: 1px solid var(--line);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  border-radius: 6px;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+.round-chip small { color: var(--muted); font-family: var(--mono); }
+.round-chip:hover { border-color: var(--pitch); }
+.round-chip.active {
+  border-color: var(--pitch);
+  background: var(--pitch);
+  color: #fff;
+}
+.round-chip.active small { color: rgba(255, 255, 255, 0.85); }
+
+.scroll-x { overflow-x: auto; }
+
+.bench-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 13.5px;
+}
+.bench-row:last-child { border-bottom: none; }
+
+.fx-headline {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+.fx-date { max-width: 230px; margin-bottom: 14px; }

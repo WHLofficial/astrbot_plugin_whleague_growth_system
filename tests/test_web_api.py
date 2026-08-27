@@ -389,3 +389,204 @@ def test_export_download_current(api):
     set_request(query={}, username="t")
     res = call(api.download_export())
     assert isinstance(res, str)  # file_response 桩返回路径字符串
+
+
+# ─── 主场赛程联动 ─────────────────────────────────────────
+
+def _make_revenue_db(path):
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE matches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            season_number INTEGER NOT NULL,
+            window_seq INTEGER NOT NULL,
+            round_no INTEGER NOT NULL,
+            competition TEXT DEFAULT '联赛',
+            home_team TEXT NOT NULL,
+            away_team TEXT NOT NULL,
+            weather TEXT DEFAULT '',
+            result TEXT DEFAULT '',
+            score TEXT DEFAULT ''
+        );
+        INSERT INTO matches (season_number, window_seq, round_no, home_team, away_team, weather, result, score) VALUES
+            (7, 2, 1, 'A队', 'B队', '晴', 'home', '2-1'),
+            (7, 2, 1, 'C队', 'D队', '', '', ''),
+            (7, 2, 2, 'A队', 'E队', '', '', '');
+        CREATE TABLE league_state (
+            id INTEGER PRIMARY KEY CHECK (id=1),
+            season_number INTEGER, window_seq INTEGER, current_round INTEGER
+        );
+        INSERT INTO league_state VALUES (1, 7, 2, 1);
+        CREATE TABLE season_names (season_number INTEGER PRIMARY KEY, name TEXT);
+        INSERT INTO season_names VALUES (7, '秋赛');
+        """
+    )
+    conn.commit()
+    conn.close()
+
+
+@pytest.fixture()
+def rev_api(api):
+    """在 api 的临时目录里放一个最小 revenue 库并接上只读桥。"""
+    from astrbot_plugin_whleague_growth_system.services.revenue_bridge import RevenueBridge
+
+    db_path = os.path.join(api._plugin._tmp, "revenue_system.db")
+    _make_revenue_db(db_path)
+    bridge = RevenueBridge({"revenue_db_path": db_path})
+    api._plugin.revenue_bridge = bridge
+    yield api
+    try:
+        asyncio.run(bridge.close())
+    except Exception:
+        pass
+
+
+def test_fixture_routes_registered(api):
+    routes = {route for route, _ in api._plugin.context.routes}
+    assert any(r.endswith("/fixtures/rounds") for r in routes)
+    assert any(r.endswith("/fixtures") and not r.rstrip("/").endswith("rounds") for r in routes)
+    assert any("/fixtures/detail/" in r for r in routes)
+    assert any(r.endswith("/fixtures/appearance") for r in routes)
+
+
+def test_fixtures_unavailable_when_db_missing(api):
+    from astrbot_plugin_whleague_growth_system.services.revenue_bridge import RevenueBridge
+
+    missing = os.path.join(api._plugin._tmp, "nope.db")
+    api._plugin.revenue_bridge = RevenueBridge({"revenue_db_path": missing})
+    res = call(api.fixtures_rounds())
+    assert res["data"]["available"] is False
+
+
+def test_fixtures_rounds_and_list(rev_api):
+    api = rev_api
+    set_request(username="t")
+    data = call(api.fixtures_rounds())["data"]
+    assert data["available"] is True
+    assert data["state"]["season_number"] == 7
+    assert data["state"]["season_name"] == "秋赛"
+    assert [r["round_no"] for r in data["rounds"]] == [1, 2]
+    assert data["rounds"][0]["total"] == 2 and data["rounds"][0]["played"] == 1
+
+    set_request(query={"round": "1"}, username="t")
+    res = call(api.fixtures_list())["data"]
+    assert {f["fixture_key"] for f in res["fixtures"]} == {"1", "2"}
+    assert all(f["season_number"] == 7 for f in res["fixtures"])
+
+    set_request(query={"played": "1"}, username="t")
+    only_played = call(api.fixtures_list())["data"]["fixtures"]
+    assert {f["fixture_key"] for f in only_played} == {"1"}
+
+    set_request(query={"round": "x"}, username="t")
+    with pytest.raises(ValueError):
+        call(api.fixtures_list())
+
+
+async def _match_rows(plugin, where: str):
+    def _query(conn):
+        return conn.execute(f"SELECT match_date, opponent, rev_fixture_key, rev_side FROM matches WHERE {where}")
+
+    # DatabaseManager.execute_transaction 需要异步函数，这里包一层
+    async def tx(conn):
+        cur = await _query(conn)
+        return [dict(zip(("match_date", "opponent", "rev_fixture_key", "rev_side"), row)) for row in await cur.fetchall()]
+
+    return await plugin.db.execute_transaction(tx)
+
+
+def test_save_appearance_reuses_legacy_row(rev_api):
+    """普通通道先建的比赛（无绑定），绑定保存时应被采纳而不是另开一行。"""
+    api = rev_api
+    set_request(
+        body={"player_uid": "p01", "match_date": "2026-09-01", "opponent": "B队",
+              "stats": {"assist": "1"}},
+        username="t",
+    )
+    call(api.record_match())
+    legacy = asyncio.run(_match_rows(api._plugin, "opponent='B队'"))
+    assert len(legacy) == 1 and legacy[0]["rev_fixture_key"] is None
+
+    set_request(
+        body={"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01",
+              "stats": {"goal": "2"}, "match_date": "2026-09-01"},
+        username="t",
+    )
+    call(api.save_fixture_appearance())
+
+    rows = asyncio.run(_match_rows(api._plugin, "opponent='B队'"))
+    assert len(rows) == 1
+    assert rows[0]["rev_fixture_key"] == "1" and rows[0]["rev_side"] == "home"
+
+
+def test_save_appearance_and_detail_roundtrip(rev_api):
+    api = rev_api
+    set_request(
+        body={"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01",
+              "stats": {"goal": "3"}},
+        username="admin",
+    )
+    saved = call(api.save_fixture_appearance())["data"]
+    assert saved["stat_xp"] == 30 and saved["bonus_xp"] == 0
+
+    detail = call(api.fixture_detail("1"))["data"]
+    fx = detail["fixture"]
+    assert fx["fixture_key"] == "1" and fx["home_team"] == "A队" and fx["weather"] == "晴"
+    rosters = detail["rosters"]
+    assert [p["player_uid"] for p in rosters["home"]] == ["p01"]
+    assert rosters["unmatched"] == []
+    entry = detail["appearances"].get("p01")
+    assert entry is not None and entry["stats"] == {"goal": 3.0}
+    assert entry["period_no"] >= 1
+    assert detail["has_rule"] is True
+
+
+def test_fixture_detail_unknown_key_404(rev_api):
+    api = rev_api
+    set_request(username="t")
+    res = call(api.fixture_detail("999"))
+    assert res.status_code == 404
+
+
+def test_save_appearance_locked_for_past_period(rev_api):
+    api = rev_api
+    body = {"rev_fixture_key": "1", "rev_side": "away", "player_uid": "p01", "stats": {"goal": "1"}}
+    set_request(body=body, username="t")
+    call(api.save_fixture_appearance())
+
+    async def tx(conn):
+        # 外键要求 period_no 必须真实存在，先造一个已结束的旧期再改归属
+        await conn.execute(
+            "INSERT OR IGNORE INTO growth_periods (period_no, name, is_current) VALUES (9, '旧期', 0)"
+        )
+        await conn.execute("UPDATE appearances SET period_no = 9")
+
+    asyncio.run(api._plugin.db.execute_transaction(tx))
+
+    with pytest.raises(ValueError) as ei:
+        call(api.save_fixture_appearance())
+    assert "锁定" in str(ei.value)
+
+
+def test_save_appearance_validation(rev_api):
+    api = rev_api
+    cases = [
+        {"rev_fixture_key": "", "rev_side": "home", "player_uid": "p01", "stats": {"goal": "1"}},
+        {"rev_fixture_key": "1", "rev_side": "midfield", "player_uid": "p01", "stats": {"goal": "1"}},
+        {"rev_fixture_key": "1", "rev_side": "home", "player_uid": "", "stats": {"goal": "1"}},
+        {"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01", "stats": {}},
+        {"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01", "stats": {"goal": "0"}},
+        {"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01", "stats": {"goal": "abc"}},
+    ]
+    for case in cases:
+        set_request(body=case, username="t")
+        with pytest.raises(ValueError):
+            call(api.save_fixture_appearance())
+
+    # 对阵不存在：返回 404 响应而非异常
+    set_request(body={"rev_fixture_key": "999", "rev_side": "home",
+                      "player_uid": "p01", "stats": {"goal": "1"}}, username="t")
+    res = call(api.save_fixture_appearance())
+    assert res.status_code == 404

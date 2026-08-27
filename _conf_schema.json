@@ -154,5 +154,17 @@
     "hint": "多行反馈转卡片时节点数上限，超出截断并提示用 /成长导出 获取完整数据。",
     "type": "int",
     "default": 50
+  },
+  "notify_on_league_advance": {
+    "description": "联赛推进群内提醒",
+    "hint": "主场插件执行 /主场推进 后，在原群实时提醒管理员开启新的成长期（需对方 v2.6.0+）。",
+    "type": "bool",
+    "default": true
+  },
+  "revenue_db_path": {
+    "description": "主场营收数据库路径",
+    "hint": "留空自动定位 AstrBot/plugin_data/astrbot_plugin_whleague_revenue_system/revenue_system.db；仅在自定义部署位置时填写。",
+    "type": "string",
+    "default": ""
   }
 }

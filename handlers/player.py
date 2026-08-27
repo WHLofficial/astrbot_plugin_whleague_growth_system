@@ -260,3 +260,82 @@ class PlayerHandler:
                 )
             lines.append("查看指定期明细: /成长 期 <期号>")
         yield event.plain_result("\n".join(lines))
+
+    # ─── 赛程（主场营收插件联动，只读）───────────────────────
+
+    async def show_fixtures(
+        self, event: AstrMessageEvent, args: list[str] | None = None
+    ) -> AsyncGenerator[MessageEventResult, None]:
+        """查看联赛赛程：/成长 赛程 [轮次]；轮次支持文字前缀（如「顶级9」）。"""
+        from ..services.revenue_bridge import RevenueBridge
+
+        bridge: RevenueBridge = self._plugin.revenue_bridge
+        if bridge is None or not await bridge.is_available():
+            yield event.plain_result(
+                "未检测到主场营收插件数据库（astrbot_plugin_whleague_revenue_system），"
+                "赛程联动不可用。"
+            )
+            return
+        state = await bridge.get_league_state()
+        raw = (args[0].strip() if args else "")
+        rounds = await bridge.list_rounds()
+        fixtures = await bridge.list_fixtures(
+            round_no=int(raw) if raw.isdigit() and raw else None
+        )
+        if fixtures is None:
+            yield event.plain_result("读取赛程失败，请检查主场插件数据库。")
+            return
+
+        def round_label(no) -> str:
+            text = str(no)
+            return text
+
+        lines = []
+        if state:
+            season_name = str(state.get("season_name") or "").strip()
+            suffix = f"「{season_name}」" if season_name else ""
+            lines.append(
+                f"【赛程】第{state.get('season_number')}赛季{suffix} "
+                f"第{state.get('window_seq')}窗口"
+            )
+        else:
+            lines.append("【赛程】")
+        selected: list[dict] = []
+        for fx in fixtures:
+            played = bool(fx.get("result"))
+            if raw and not raw.isdigit() and str(fx.get("round_no")) != raw:
+                continue  # 文字前缀轮次：按字符串原样过滤
+            if played and fx.get("score"):
+                selected.append({**fx, "_tag": f"✅ {fx['home_team']} {fx['score']} {fx['away_team']}"})
+            elif played:
+                selected.append({**fx, "_tag": f"✔ 已录赛果 {fx['home_team']} vs {fx['away_team']}"})
+            else:
+                selected.append({**fx, "_tag": f"⬜ {fx['home_team']} vs {fx['away_team']}"})
+        # 按轮次分组输出
+        by_round: dict[str, list] = {}
+        for fx in selected:
+            by_round.setdefault(round_label(fx["round_no"]), []).append(fx)
+        if raw:
+            shown_rounds = [r for r in by_round]
+        else:
+            shown_rounds = sorted(by_round)
+        for r in shown_rounds[:8]:
+            items = by_round[r]
+            total_played = sum(1 for it in items if it.get("result"))
+            lines.append(f"— 第{r}轮（已打{total_played}/{len(items)}）—")
+            comp_seen = ""
+            for it in items:
+                tag = it["_tag"]
+                comp = str(it.get("competition") or "")
+                prefix = f"[{comp}] " if comp != "联赛" else ""
+                weather = str(it.get("weather") or "").strip()
+                if weather:
+                    tag += f"（{weather}）"
+                lines.append(f"· {prefix}{tag}")
+            if len(shown_rounds) > 8:
+                continue
+        if len(by_round) > 8 and len(lines) < 400:
+            lines.append(f"… 其余 {len(by_round) - 8} 轮未展示，可指定轮次查看: /成长 赛程 <轮次>")
+        if not lines[1:] and not state:
+            lines.append("暂无赛程数据。")
+        yield event.plain_result("\n".join(lines))

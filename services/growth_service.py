@@ -52,11 +52,16 @@ class GrowthService:
         opponent: str,
         stats: dict,
         created_by: str,
+        *,
+        rev_fixture_key: str | None = None,
+        rev_side: str | None = None,
     ) -> dict:
         """录入/覆盖一位球员单场比赛数据。
 
         事务内：校验球员与数据项 → 计算 stat_xp → 写/覆盖 appearance 与 stats
         → 里程碑检查（未颁发且达标则颁发）→ 增量更新 players.xp / xp_total。
+        rev_fixture_key/rev_side 绑定主场赛程对阵（side=home|away），同一场
+        比赛在主/客视角各存一行，opponent 均为对面队名。
         """
         rule = await self.get_rule()
         if rule is None:
@@ -68,12 +73,16 @@ class GrowthService:
                 f"数据项未在规则中定义: {', '.join(unknown)}（可用 /成长 规则 查看）"
             )
 
+        if rev_fixture_key and rev_side not in ("home", "away"):
+            raise ValueError("rev_side 必须为 home 或 away")
+
         period = await self._dao.get_current_period()
         period_no = period["period_no"] if period else 1
 
         result = await self._db.execute_transaction(
             lambda conn: self._record_one(
-                conn, rule, player_uid, match_date, opponent, stats, created_by, period_no
+                conn, rule, player_uid, match_date, opponent, stats, created_by, period_no,
+                rev_fixture_key=rev_fixture_key, rev_side=rev_side,
             )
         )
         return result
@@ -88,16 +97,39 @@ class GrowthService:
         stats: dict,
         created_by: str,
         period_no: int,
+        *,
+        rev_fixture_key: str | None = None,
+        rev_side: str | None = None,
     ) -> dict:
         player = await self._dao.get_player_conn(conn, player_uid)
         if player is None or not player["active"]:
             raise ValueError(f"球员不存在或已停用: {player_uid}（可用 /成长 球员 查看名单）")
 
-        match = await self._dao.get_match(conn, match_date, opponent)
-        if match is None:
-            match_id = await self._dao.create_match(conn, match_date, opponent, created_by)
+        if rev_fixture_key:
+            match = await self._dao.get_match_by_fixture(conn, rev_fixture_key, rev_side)
+            if match is None:
+                # 未绑定过：先按日期对手找普通比赛，若存在且无绑定则采纳补绑，
+                # 避免同一真实比赛在聊天上报与 WebUI 录数两个入口各建一行
+                legacy = await self._dao.get_match(conn, match_date, opponent)
+                if legacy is not None and not legacy["rev_fixture_key"]:
+                    await self._dao.bind_match_fixture(
+                        conn, legacy["id"], rev_fixture_key, rev_side
+                    )
+                    match = legacy
+            match_id = (
+                match["id"]
+                if match is not None
+                else await self._dao.create_match(
+                    conn, match_date, opponent, created_by,
+                    rev_fixture_key=rev_fixture_key, rev_side=rev_side,
+                )
+            )
         else:
-            match_id = match["id"]
+            match = await self._dao.get_match(conn, match_date, opponent)
+            match_id = (
+                match["id"] if match is not None
+                else await self._dao.create_match(conn, match_date, opponent, created_by)
+            )
 
         old = await self._dao.get_appearance(conn, match_id, player_uid)
         old_stat_xp = round(float(old["stat_xp"]), 1) if old else 0.0

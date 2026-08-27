@@ -7,6 +7,7 @@ const TABS = [
   { id: "overview", label: "总览", loader: () => import("./overview.js") },
   { id: "players", label: "球员", loader: () => import("./players.js") },
   { id: "matches", label: "比赛", loader: () => import("./matches.js") },
+  { id: "fixtures", label: "赛程", loader: () => import("./fixtures.js") },
   { id: "imports", label: "导入", loader: () => import("./imports.js") },
   { id: "periods", label: "成长期", loader: () => import("./periods.js") },
   { id: "rules", label: "规则", loader: () => import("./rules.js") },

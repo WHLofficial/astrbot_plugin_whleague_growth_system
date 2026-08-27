@@ -8,13 +8,14 @@
 from __future__ import annotations
 
 import mimetypes
+from datetime import date
 
 from astrbot.api import logger
 from astrbot.api.web import error_response, file_response, json_response, request
 
 from .config.defaults import validate_and_cast
 from .handlers.admin import _CONFIG_GROUPS, _KIND_NAME, _as_bool, _format_config_value
-from .utils.security import parse_num, sanitize_filename, sanitize_text
+from .utils.security import normalize_name, parse_num, sanitize_filename, sanitize_text
 
 PLUGIN_NAME = "astrbot_plugin_whleague_growth_system"
 
@@ -64,6 +65,10 @@ class WebApi:
         r("/imports/confirm", self.confirm_import, ["POST"], "确认执行导入")
         r("/uploads/<kind>", self.upload_file, ["POST"], "上传导入文件并预览")
         r("/matches/record", self.record_match, ["POST"], "录入单场比赛")
+        r("/fixtures/rounds", self.fixtures_rounds, ["GET"], "赛程轮次总览")
+        r("/fixtures", self.fixtures_list, ["GET"], "赛程对阵列表")
+        r("/fixtures/detail/<key>", self.fixture_detail, ["GET"], "单场对阵详情")
+        r("/fixtures/appearance", self.save_fixture_appearance, ["POST"], "按对阵保存球员数据")
         r("/exports", self.download_export, ["GET"], "下载结算表文件")
 
     # ─── 基础 ──────────────────────────────────────────────
@@ -229,6 +234,168 @@ class WebApi:
         created_by = f"webui:{request.username}" if request.username else "webui"
         result = await self._plugin.growth_service.record_match(
             player_uid, match_date, opponent, stats, created_by
+        )
+        return json_response(result)
+
+    # ─── 主场赛程联动 ──────────────────────────────────────
+
+    def _team_matches(self, player_team: str, team_name: str) -> bool:
+        a = normalize_name(player_team)
+        b = normalize_name(team_name)
+        return bool(a) and a == b
+
+    async def fixtures_rounds(self):
+        p = self._plugin
+        bridge = p.revenue_bridge
+        if not await bridge.is_available():
+            return json_response({"available": False, "state": None, "rounds": [], "recorded": {}})
+        rounds = await bridge.list_rounds()
+        if rounds is None:
+            return json_response({"available": False, "state": None, "rounds": [], "recorded": {}})
+        state = await bridge.get_league_state()
+        recorded = await p.dao.fixture_record_counts()
+        return json_response(
+            {
+                "available": True,
+                "state": state,
+                "rounds": [dict(row) for row in rounds],
+                "recorded": recorded,
+            }
+        )
+
+    async def fixtures_list(self):
+        p = self._plugin
+        bridge = p.revenue_bridge
+        round_raw = (request.query.get("round", "") or "").strip()
+        round_no: int | None = None
+        if round_raw:
+            try:
+                round_no = int(round_raw)
+            except ValueError:
+                raise ValueError(f"无效的轮次号: {round_raw}") from None
+        played_raw = (request.query.get("played", "") or "").strip()
+        played: bool | None = True if played_raw == "1" else False if played_raw == "0" else None
+        if not await bridge.is_available():
+            return json_response({"available": False, "fixtures": []})
+        rows = await bridge.list_fixtures(round_no=round_no, played=played)
+        if rows is None:
+            return json_response({"available": False, "fixtures": []})
+        return json_response(
+            {
+                "available": True,
+                "fixtures": [
+                    {**row, "fixture_key": str(row.pop("id"))} for row in rows
+                ],
+            }
+        )
+
+    async def fixture_detail(self, key: str):
+        p = self._plugin
+        fx = await p.revenue_bridge.get_fixture(key)
+        if fx is None:
+            raise ValueError("主场插件数据库不可用，无法读取赛程")
+        if not fx:
+            return error_response("主场库中不存在该对阵（可能已重新导入赛程）", status_code=404)
+        players = await p.dao.list_all_active_players()
+        rosters = {"home": [], "away": [], "unmatched": []}
+        for pl in players:
+            team = str(pl["team"] or "")
+            bucket = (
+                "home"
+                if self._team_matches(team, fx["home_team"])
+                else "away"
+                if self._team_matches(team, fx["away_team"])
+                else "unmatched"
+            )
+            rosters[bucket].append(
+                {
+                    "player_uid": pl["player_uid"],
+                    "name": pl["name"],
+                    "team": team,
+                    "level": int(pl["level"]),
+                    "xp": float(pl["xp"]),
+                }
+            )
+        appearances: dict[str, dict] = {}
+        for row in await p.dao.list_fixture_appearances(key):
+            entry = appearances.setdefault(
+                row["player_uid"],
+                {
+                    "player_uid": row["player_uid"],
+                    "name": row["player_name"],
+                    "team": row["player_team"],
+                    "period_no": int(row["period_no"]),
+                    "stat_xp": float(row["stat_xp"]),
+                    "bonus_xp": float(row["bonus_xp"]),
+                    "total_xp": float(row["total_xp"]),
+                    "created_at": row["created_at"],
+                    "stats": {},
+                },
+            )
+            if row["stat_key"] is not None:
+                entry["stats"][row["stat_key"]] = float(row["value"])
+        current = await p.dao.get_current_period()
+        rule = await p.growth_service.get_rule()
+        fixture = dict(fx)
+        fixture["fixture_key"] = str(fixture.pop("id"))
+        return json_response(
+            {
+                "available": True,
+                "fixture": fixture,
+                "rosters": rosters,
+                "appearances": appearances,
+                "current_period_no": int(current["period_no"]) if current else 1,
+                "has_rule": rule is not None,
+            }
+        )
+
+    async def save_fixture_appearance(self):
+        body = await request.json(default={})
+        fixture_key = str(body.get("rev_fixture_key", "")).strip()
+        side = str(body.get("rev_side", "")).strip().lower()
+        player_uid = str(body.get("player_uid", "")).strip()
+        if not fixture_key or side not in ("home", "away") or not player_uid:
+            raise ValueError("缺少对阵编号 / 球队视角 / 球员 UID")
+        fx = await self._plugin.revenue_bridge.get_fixture(fixture_key)
+        if fx is None:
+            raise ValueError("主场插件数据库不可用，无法读取赛程")
+        if not fx:
+            return error_response("主场库中不存在该对阵（可能已重新导入赛程）", status_code=404)
+
+        # 历史期锁定：已有出场记录且归属非当前成长期时禁止修改
+        current = await self._plugin.dao.get_current_period()
+        current_no = int(current["period_no"]) if current else 1
+        for row in await self._plugin.dao.list_fixture_appearances(fixture_key):
+            if row["player_uid"] == player_uid and int(row["period_no"]) != current_no:
+                raise ValueError(
+                    f"该比赛数据属于已结束的成长期第 {row['period_no']} 期，已锁定不能修改"
+                )
+
+        raw_stats = body.get("stats")
+        if not isinstance(raw_stats, dict) or not raw_stats:
+            raise ValueError("缺少数据项数值，请至少填写一项")
+        stats = {}
+        for k, val in raw_stats.items():
+            try:
+                num = parse_num(str(val))
+            except ValueError:
+                raise ValueError(f"数据项「{k}」的值“{val}”不是合法数字") from None
+            if num > 0:
+                stats[str(k)] = num
+        if not stats:
+            raise ValueError("所有数据项均为 0，无需录入")
+
+        match_date = str(body.get("match_date", "")).strip()
+        if not match_date:
+            match_date = date.today().strftime("%Y-%m-%d")
+        opponent = fx["away_team"] if side == "home" else fx["home_team"]
+        created_by = f"webui:{request.username}" if request.username else "webui"
+        result = await self._plugin.growth_service.record_match(
+            player_uid, match_date, sanitize_text(opponent), stats, created_by,
+            rev_fixture_key=fixture_key, rev_side=side,
+        )
+        logger.info(
+            "WebUI 赛程录数 %s/%s %s（by %s）", fixture_key, side, player_uid, request.username
         )
         return json_response(result)
 
