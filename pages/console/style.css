@@ -597,8 +597,6 @@ pre.preview {
 }
 .round-chip.active small { color: rgba(255, 255, 255, 0.85); }
 
-.scroll-x { overflow-x: auto; }
-
 .bench-row {
   display: flex;
   align-items: center;
@@ -617,4 +615,41 @@ pre.preview {
   margin-bottom: 10px;
 }
 
-.fx-date { max-width: 230px; margin-bottom: 14px; }
+/* 录入面板：独立卡片，位于赛程 board 下方 */
+.fx-editor { margin-top: 18px; }
+
+.fx-side-toggle {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+
+/* 花名册表：限高纵向滚动 + 表头冻结；列宽自适应输入宽度，杜绝横向拖动 */
+.fx-roster-wrap {
+  max-height: 460px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.fx-roster-wrap th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--card);
+  padding: 6px 8px;
+  box-shadow: 0 1px 0 var(--line);
+}
+.fx-roster-wrap td { padding: 5px 8px; }
+.fx-roster-wrap td small { font-size: 11px; }
+.fx-roster-wrap input[type="number"] { width: 100%; min-width: 0; }
+.fx-roster-wrap input[type="checkbox"] { width: auto; }
+.fx-roster-wrap .btn { padding: 3px 10px; font-size: 12.5px; }
+
+.fx-score {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--pitch);
+  margin: 0 2px;
+}

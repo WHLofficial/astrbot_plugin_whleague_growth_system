@@ -2,13 +2,8 @@
 
 import * as api from "./api.js";
 import {
-  el, esc, fmtXp, renderTable, toast, errorNote, openDrawer,
+  el, esc, fmtXp, renderTable, toast, errorNote,
 } from "./ui.js";
-
-function todayStr() {
-  const d = new Date();
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
 
 export async function render(root, ctx) {
   root.appendChild(el(`<div>
@@ -18,8 +13,11 @@ export async function render(root, ctx) {
 
   const banner = el(`<div class="card" id="fx-state"></div>`);
   const board = el(`<div class="card" id="fx-board"><div class="empty-state">加载中…</div></div>`);
+  /* 录入面板独立于 board：refreshRounds→drawChips 会整体重建 board，面板不能被误清 */
+  const editorZone = el(`<div id="fx-editor"></div>`);
   root.appendChild(banner);
   root.appendChild(board);
+  root.appendChild(editorZone);
 
   let statDefs = [];
   try {
@@ -30,6 +28,8 @@ export async function render(root, ctx) {
   let roundsData = null;
   let currentComp = null;
   let currentRound = null;
+  /* 各场比赛的未匹配球员手动指派（fixture_key → {uid: side}），面板收起/重开后保留 */
+  const manualAssigned = new Map();
 
   await loadRounds();
 
@@ -121,6 +121,7 @@ export async function render(root, ctx) {
               c.dataset.round === no && c.dataset.comp === comp
             );
           }
+          editorZone.innerHTML = "";
           await loadFixtures();
         });
         zone.appendChild(chip);
@@ -152,16 +153,14 @@ export async function render(root, ctx) {
       return;
     }
     const recorded = roundsData.recorded || {};
-    const wrap = el(`<div class="scroll-x"></div>`);
+    const wrap = el(`<div></div>`);
     wrap.appendChild(renderTable(
       [
-        { label: "主队", render: (r) => `<b>${esc(r.home_team)}</b>` },
         {
-          label: "比分",
-          num: true,
-          render: (r) => `<b>${esc(r.score || "—")}</b>`,
+          label: "对阵",
+          render: (r) =>
+            `<b>${esc(r.home_team)}</b> <span class="fx-score">${esc(r.score || "vs")}</span> <b>${esc(r.away_team)}</b>`,
         },
-        { label: "客队", render: (r) => `<b>${esc(r.away_team)}</b>` },
         {
           label: "状态",
           render: (r) =>
@@ -188,14 +187,14 @@ export async function render(root, ctx) {
       rows
     ));
     for (const b of wrap.querySelectorAll("button[data-key]")) {
-      b.addEventListener("click", () => openFixture(b.dataset.key));
+      b.addEventListener("click", () => openEditor(b.dataset.key));
     }
     zone.appendChild(wrap);
   }
 
-  /* ─── 单场详情抽屉 ─────────────────────────── */
+  /* ─── 单场录入面板（内嵌于赛程列表下方）────── */
 
-  async function openFixture(key) {
+  async function openEditor(key) {
     let detail;
     try {
       detail = await api.get(`fixtures/detail/${encodeURIComponent(key)}`);
@@ -212,189 +211,213 @@ export async function render(root, ctx) {
     let rosters = detail.rosters || { home: [], away: [], unmatched: [] };
     /* 已录出场：服务端以 player_uid 为键聚合 {stats:{k:v}, period_no, total_xp} */
     let apps = detail.appearances || {};
-    /* 未匹配球员被手动指定的球队视角：{uid: "home"|"away"} */
-    const assigned = {};
+    /* 未匹配球员被手动指定的球队视角：{uid: "home"|"away"}，跨保存保留 */
+    const assigned = manualAssigned.get(key) || {};
+    manualAssigned.set(key, assigned);
+    let activeSide = "home";
 
-    const d = openDrawer(`第 ${fx.round_no} 轮 · ${fx.home_team} vs ${fx.away_team}`);
-    drawBody(d.body);
+    /* 「出场」计数项（键 appearance 或名称含「出场」）用复选框表达：打过=1，没打=0 */
+    const capStat = statDefs.find(
+      ([k, def]) => k === "appearance" || String(def.name || "").includes("出场")
+    );
+    const numStats = statDefs.filter(([k]) => !capStat || k !== capStat[0]);
 
-    function dateField() {
-      const wrap = el(`<label class="field fx-date"><span>比赛日期（首次保存生效）</span><input type="date"></label>`);
-      wrap.querySelector("input").value = todayStr();
-      return wrap;
+    const zone = editorZone;
+    zone.innerHTML = "";
+    const card = el(`<div class="card fx-editor">
+      <div class="fx-headline">
+        <b>第 ${esc(fx.round_no)} 轮 · ${esc(fx.home_team)} vs ${esc(fx.away_team)}</b>
+        <span class="badge-period">${esc(fx.competition || "联赛")} · 第 ${esc(fx.season_number)} 赛季 第 ${esc(fx.window_seq)} 窗口</span>
+        ${fx.result === "C" ? `<span class="tag">取消</span>` : fx.result ? `<span class="tag ok">已完赛</span>` : `<span class="tag">未打</span>`}
+        ${fx.weather ? `<span class="hint">${esc(fx.weather)}</span>` : ""}
+        <span style="flex:1"></span>
+        <button type="button" class="btn secondary" data-act="close">收起</button>
+      </div>
+      <div class="fx-side-toggle" role="tablist"></div>
+      <div class="fx-roster-wrap"></div>
+      <div class="fx-bench"></div>
+    </div>`);
+    card.querySelector('[data-act="close"]').addEventListener("click", () => {
+      zone.innerHTML = "";
+    });
+    zone.appendChild(card);
+
+    function sidePlayers(side) {
+      const base = rosters[side].map((p) => ({ ...p }));
+      for (const [uid, asSide] of Object.entries(assigned)) {
+        if (asSide !== side) continue;
+        const p = rosters.unmatched.find((x) => x.player_uid === uid);
+        if (p && !base.some((x) => x.player_uid === uid)) base.push({ ...p });
+      }
+      return base;
     }
 
-    function drawBody(body) {
-      body.innerHTML = "";
-      body.appendChild(el(`<div class="fx-headline">
-        <span class="badge-period">${esc(fx.competition || "联赛")} · 第 ${esc(fx.season_number)} 赛季 第 ${esc(fx.window_seq)} 窗口</span>
-        ${fx.result ? `<span class="tag ok">已完赛</span>` : `<span class="tag">未打</span>`}
-        ${fx.weather ? `<span class="hint">${esc(fx.weather)}</span>` : ""}
-      </div>`));
+    function drawTable() {
+      const wrapEl = card.querySelector(".fx-roster-wrap");
+      wrapEl.innerHTML = "";
+      const players = sidePlayers(activeSide);
+      if (!players.length) {
+        wrapEl.appendChild(el(`<p class="hint" style="margin:10px">无匹配球员（球员库中无人绑定该队名，可在下方未匹配名单中指定）</p>`));
+        return;
+      }
+      const capHead = capStat ? `<th class="num">出场</th>` : "";
+      const numHead = numStats
+        .map(([k, def]) => `<th class="num">${esc(def.name || k)}</th>`)
+        .join("");
+      const t = el(`<table class="grid"><thead><tr>
+        <th>球员</th>${capHead}${numHead}<th class="num">本期经验</th><th></th>
+      </tr></thead><tbody></tbody></table>`);
+      for (const p of players) t.querySelector("tbody").appendChild(playerRow(p));
+      wrapEl.appendChild(t);
+    }
 
-      const dateInput = dateField();
-      body.appendChild(dateInput);
+    function playerRow(p) {
+      const tr = document.createElement("tr");
+      const appP = apps[p.player_uid];
+      const locked = Boolean(appP && Number(appP.period_no) !== Number(detail.current_period_no));
 
-      const zoneHome = el(`<div></div>`);
-      const zoneAway = el(`<div></div>`);
-      const zoneBench = el(`<div></div>`);
-      body.appendChild(zoneHome);
-      body.appendChild(zoneAway);
-      body.appendChild(zoneBench);
-      redraw();
+      const tdName = document.createElement("td");
+      tdName.innerHTML = `<b>${esc(p.name)}</b><br><small class="hint">${esc(p.player_uid)}</small>`;
+      tr.appendChild(tdName);
 
-      function sidePlayers(side) {
-        const base = rosters[side].map((p) => ({ ...p }));
-        for (const [uid, asSide] of Object.entries(assigned)) {
-          if (asSide !== side) continue;
-          const p = rosters.unmatched.find((x) => x.player_uid === uid);
-          if (p && !base.some((x) => x.player_uid === uid)) base.push({ ...p });
-        }
-        return base;
+      let capInp = null;
+      if (capStat) {
+        const td = document.createElement("td");
+        td.className = "num";
+        capInp = document.createElement("input");
+        capInp.type = "checkbox";
+        capInp.checked = Boolean(appP && Number(appP.stats[capStat[0]]) > 0);
+        if (locked) capInp.disabled = true;
+        td.appendChild(capInp);
+        tr.appendChild(td);
       }
 
-      function section(side, titleText, zone) {
-        zone.innerHTML = "";
-        const cardEl = el(`<div style="margin-bottom:18px"></div>`);
-        cardEl.appendChild(el(`<h4 style="margin:0 0 8px;font-family:var(--serif);font-size:14px">${esc(titleText)}</h4>`));
-        const tableZone = el(`<div class="scroll-x"></div>`);
-        const players = sidePlayers(side);
-        if (!players.length) {
-          tableZone.appendChild(el(`<p class="hint" style="margin:4px 0">无匹配球员（球员库中无人绑定该队名，可在下方未匹配名单中指定）</p>`));
-        } else {
-          const thead = statDefs.map(([key, def]) => `<th class="num">${esc(def.name || key)}</th>`).join("");
-          const t = el(`<table class="grid"><thead><tr>
-            <th>球员</th>${thead}<th class="num">本期经验</th><th></th>
-          </tr></thead><tbody></tbody></table>`);
-          for (const p of players) t.querySelector("tbody").appendChild(playerRow(side, p));
-          tableZone.appendChild(t);
-        }
-        cardEl.appendChild(tableZone);
-        zone.appendChild(cardEl);
+      const inputs = [];
+      for (const [k, def] of numStats) {
+        const td = document.createElement("td");
+        td.className = "num";
+        const inp = document.createElement("input");
+        inp.type = "number";
+        inp.step = "any";
+        inp.min = "0";
+        inp.title = def.name || k;
+        if (appP && appP.stats[k] != null) inp.value = String(appP.stats[k]);
+        if (locked) inp.disabled = true;
+        td.appendChild(inp);
+        tr.appendChild(td);
+        inputs.push([k, inp]);
       }
 
-      function playerRow(side, p) {
-        const tr = document.createElement("tr");
-        const appP = apps[p.player_uid];
-        const locked = Boolean(appP && Number(appP.period_no) !== Number(detail.current_period_no));
-
-        const tdName = document.createElement("td");
-        tdName.innerHTML = `<b>${esc(p.name)}</b><br><small class="hint">${esc(p.player_uid)}</small>`;
-        tr.appendChild(tdName);
-
-        const inputs = [];
-        for (const [key, def] of statDefs) {
-          const td = document.createElement("td");
-          td.className = "num";
-          const inp = document.createElement("input");
-          inp.type = "number";
-          inp.step = "any";
-          inp.min = "0";
-          inp.title = def.name || key;
-          inp.style.width = "76px";
-          if (appP && appP.stats[key] != null) inp.value = String(appP.stats[key]);
-          if (locked) inp.disabled = true;
-          td.appendChild(inp);
-          tr.appendChild(td);
-          inputs.push([key, inp]);
-        }
-
-        const tdXp = document.createElement("td");
-        tdXp.className = "num";
-        tdXp.textContent = appP ? fmtXp(appP.total_xp) : "—";
-        if (locked) {
-          const tag = el(`<small class="hint">第${appP.period_no}期锁定</small>`);
-          tdXp.appendChild(document.createElement("br"));
-          tdXp.appendChild(tag);
-        }
-        tr.appendChild(tdXp);
-
-        const tdOp = document.createElement("td");
-        const btn = document.createElement("button");
-        btn.type = "button";
-        btn.className = "btn secondary";
-        btn.textContent = appP ? "更新" : "保存";
-        if (locked) {
-          btn.disabled = true;
-          btn.title = `该数据属于已结束的成长期第 ${appP.period_no} 期`;
-        }
-        btn.addEventListener("click", async () => {
-          const stats = {};
-          for (const [key, inp] of inputs) {
-            const v = inp.value.trim();
-            if (v !== "" && Number(v) !== 0) stats[key] = v;
-          }
-          if (!Object.keys(stats).length) {
-            toast(`${p.name} 的数据项均为空或 0`, true);
-            return;
-          }
-          btn.disabled = true;
-          try {
-            const r = await api.post("fixtures/appearance", {
-              rev_fixture_key: key,
-              rev_side: side,
-              player_uid: p.player_uid,
-              stats,
-              match_date: dateInput.querySelector("input").value || todayStr(),
-            });
-            toast(`${r.name} 已保存：+${fmtXp(r.total_xp)} 经验`);
-            ctx.refreshBadges();
-            await reopen();
-          } catch (e) {
-            toast(e.message, true);
-            btn.disabled = false;
-          }
-        });
-        tdOp.appendChild(btn);
-        tr.appendChild(tdOp);
-        return tr;
+      const tdXp = document.createElement("td");
+      tdXp.className = "num";
+      tdXp.textContent = appP ? fmtXp(appP.total_xp) : "—";
+      if (locked) {
+        const tag = el(`<small class="hint">第${appP.period_no}期锁定</small>`);
+        tdXp.appendChild(document.createElement("br"));
+        tdXp.appendChild(tag);
       }
+      tr.appendChild(tdXp);
 
-      function bench() {
-        zoneBench.innerHTML = "";
-        const list = rosters.unmatched.filter((p) => !assigned[p.player_uid]);
-        if (!list.length) return;
-        zoneBench.appendChild(el(`<h4 style="margin:14px 0 8px;font-family:var(--serif);font-size:14px">未匹配名单<span class="hint">（球员所属队伍与双方队名都不一致，手动指定视角后即可录入）</span></h4>`));
-        for (const p of list) {
-          const hasApp = Boolean(apps[p.player_uid]);
-          const rowEl = el(`<div class="bench-row">
-            <b></b><small class="hint"></small><span style="flex:1"></span>
-            <button type="button" class="btn secondary" data-side="home">记入主队</button>
-            <button type="button" class="btn secondary" data-side="away">记入客队</button>
-          </div>`);
-          rowEl.querySelector("b").textContent = p.name;
-          rowEl.querySelector("small").textContent =
-            `${p.player_uid}${p.team ? " · 所属: " + p.team : ""}${hasApp ? " · 已有记录" : ""}`;
-          for (const b of rowEl.querySelectorAll("button[data-side]")) {
-            b.addEventListener("click", () => {
-              assigned[p.player_uid] = b.dataset.side;
-              redraw();
-            });
-          }
-          zoneBench.appendChild(rowEl);
+      const tdOp = document.createElement("td");
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn secondary";
+      btn.textContent = appP ? "更新" : "保存";
+      if (locked) {
+        btn.disabled = true;
+        btn.title = `该数据属于已结束的成长期第 ${appP.period_no} 期`;
+      }
+      btn.addEventListener("click", async () => {
+        const stats = {};
+        for (const [k, inp] of inputs) {
+          const v = inp.value.trim();
+          if (v !== "" && Number(v) !== 0) stats[k] = v;
         }
-      }
-
-      function redraw() {
-        section("home", `主队 ${fx.home_team}`, zoneHome);
-        section("away", `客队 ${fx.away_team}`, zoneAway);
-        bench();
-      }
-
-      /** 保存成功后重拉详情并原地重绘本抽屉。 */
-      async function reopen() {
-        try {
-          detail = await api.get(`fixtures/detail/${encodeURIComponent(key)}`);
-        } catch (e) {
-          toast(e.message, true);
+        if (capStat && capInp.checked) stats[capStat[0]] = "1";
+        if (!Object.keys(stats).length) {
+          toast(`${p.name} 的数据项均为空或 0（勾选「出场」可只记出场）`, true);
           return;
         }
-        // 重算聚合（assigned 保留用户手动指定）
-        rosters = detail.rosters || { home: [], away: [], unmatched: [] };
-        apps = detail.appearances || {};
-        drawBody(d.body);
-        await refreshRounds();
+        btn.disabled = true;
+        try {
+          const r = await api.post("fixtures/appearance", {
+            rev_fixture_key: key,
+            rev_side: activeSide,
+            player_uid: p.player_uid,
+            stats,
+          });
+          toast(`${r.name} 已保存：+${fmtXp(r.total_xp)} 经验`);
+          ctx.refreshBadges();
+          await reopenEditor();
+        } catch (e) {
+          toast(e.message, true);
+          btn.disabled = false;
+        }
+      });
+      tdOp.appendChild(btn);
+      tr.appendChild(tdOp);
+      return tr;
+    }
+
+    function drawBench() {
+      const zoneBench = card.querySelector(".fx-bench");
+      zoneBench.innerHTML = "";
+      const list = rosters.unmatched.filter((p) => !assigned[p.player_uid]);
+      if (!list.length) return;
+      zoneBench.appendChild(el(`<h4 style="margin:14px 0 8px;font-family:var(--serif);font-size:14px">未匹配名单<span class="hint">（球员所属队伍与双方队名都不一致，指定视角后即出现在对应一侧）</span></h4>`));
+      for (const p of list) {
+        const hasApp = Boolean(apps[p.player_uid]);
+        const rowEl = el(`<div class="bench-row">
+          <b></b><small class="hint"></small><span style="flex:1"></span>
+          <button type="button" class="btn secondary" data-side="home">记入主队</button>
+          <button type="button" class="btn secondary" data-side="away">记入客队</button>
+        </div>`);
+        rowEl.querySelector("b").textContent = p.name;
+        rowEl.querySelector("small").textContent =
+          `${p.player_uid}${p.team ? " · 所属: " + p.team : ""}${hasApp ? " · 已有记录" : ""}`;
+        for (const b of rowEl.querySelectorAll("button[data-side]")) {
+          b.addEventListener("click", () => {
+            assigned[p.player_uid] = b.dataset.side;
+            redraw();
+          });
+        }
+        zoneBench.appendChild(rowEl);
       }
     }
+
+    function redraw() {
+      const toggle = card.querySelector(".fx-side-toggle");
+      toggle.innerHTML = "";
+      for (const side of ["home", "away"]) {
+        const team = side === "home" ? fx.home_team : fx.away_team;
+        const chip = el(`<button type="button" class="round-chip${side === activeSide ? " active" : ""}" data-side="${side}">
+          <b>${side === "home" ? "主队" : "客队"} ${esc(team)}</b><small>${sidePlayers(side).length} 人</small>
+        </button>`);
+        chip.addEventListener("click", () => {
+          activeSide = side;
+          redraw();
+        });
+        toggle.appendChild(chip);
+      }
+      drawTable();
+      drawBench();
+    }
+
+    /** 保存成功后重拉详情并原地重绘（手动指派保留）。 */
+    async function reopenEditor() {
+      try {
+        detail = await api.get(`fixtures/detail/${encodeURIComponent(key)}`);
+      } catch (e) {
+        toast(e.message, true);
+        return;
+      }
+      rosters = detail.rosters || { home: [], away: [], unmatched: [] };
+      apps = detail.appearances || {};
+      redraw();
+      await refreshRounds();
+    }
+
+    redraw();
+    zone.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }
