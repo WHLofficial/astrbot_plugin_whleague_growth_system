@@ -28,6 +28,10 @@ export async function render(root, ctx) {
   let roundsData = null;
   let currentComp = null;
   let currentRound = null;
+  /* 未保存改动拦截：dirtyProbe 由录入面板注册（当前队是否存在未保存输入），
+     pendingSwitch 是用户确认「放弃并切换」后才执行的动作 */
+  let dirtyProbe = null;
+  let pendingSwitch = null;
 
   await loadRounds();
 
@@ -111,16 +115,22 @@ export async function render(root, ctx) {
           <b>第 ${esc(no)} 轮</b><small>${r.played}/${r.total}</small>
         </button>`);
         chip.addEventListener("click", async () => {
-          currentComp = comp;
-          currentRound = no;
-          for (const c of zone.querySelectorAll(".round-chip")) {
-            c.classList.toggle(
-              "active",
-              c.dataset.round === no && c.dataset.comp === comp
-            );
-          }
-          editorZone.innerHTML = "";
-          await loadFixtures();
+          if (no === currentRound && comp === (currentComp || "联赛")) return;
+          const proceed = async () => {
+            currentComp = comp;
+            currentRound = no;
+            for (const c of zone.querySelectorAll(".round-chip")) {
+              c.classList.toggle(
+                "active",
+                c.dataset.round === no && c.dataset.comp === comp
+              );
+            }
+            editorZone.innerHTML = "";
+            dirtyProbe = null;
+            await loadFixtures();
+          };
+          if (dirtyProbe && dirtyProbe()) showConfirm(proceed);
+          else await proceed();
         });
         zone.appendChild(chip);
       }
@@ -190,9 +200,39 @@ export async function render(root, ctx) {
     zone.appendChild(wrap);
   }
 
+  /* ─── 未保存改动确认条 ─────────────────────── */
+
+  /** 挂起 action 并在录入区顶部弹确认条；用户选择后执行或丢弃。 */
+  function showConfirm(action) {
+    pendingSwitch = action;
+    if (editorZone.querySelector(".fx-confirm")) return;
+    const bar = el(`<div class="fx-confirm">
+      <span>录入面板有未保存的改动，切换后将丢失。</span>
+      <span style="flex:1"></span>
+      <button type="button" class="btn secondary" data-c="stay">继续编辑</button>
+      <button type="button" class="btn danger" data-c="leave">放弃并切换</button>
+    </div>`);
+    bar.querySelector('[data-c="stay"]').addEventListener("click", () => {
+      bar.remove();
+      pendingSwitch = null;
+    });
+    bar.querySelector('[data-c="leave"]').addEventListener("click", () => {
+      bar.remove();
+      const go = pendingSwitch;
+      pendingSwitch = null;
+      dirtyProbe = null;
+      if (typeof go === "function") go();
+    });
+    editorZone.prepend(bar);
+  }
+
   /* ─── 单场录入面板（内嵌于赛程列表下方）────── */
 
   async function openEditor(key) {
+    if (dirtyProbe && dirtyProbe()) {
+      showConfirm(() => openEditor(key));
+      return;
+    }
     let detail;
     try {
       detail = await api.get(`fixtures/detail/${encodeURIComponent(key)}`);
@@ -217,6 +257,47 @@ export async function render(root, ctx) {
     );
     const numStats = statDefs.filter(([k]) => !capStat || k !== capStat[0]);
 
+    /* 脏检测：registry 记录当前渲染侧每行的输入与基线快照。仅能检测当前显示的队——
+       切换后 DOM 重建，另一侧未保存改动随之丢弃，因此切换前必须先经确认条。 */
+    const registry = new Map();
+
+    function readRow(entry) {
+      const cap = Boolean(capStat && entry.capInp && entry.capInp.checked);
+      const values = {};
+      for (const [k, inp] of entry.inputs) {
+        const v = inp.value.trim();
+        if (v !== "" && Number(v) !== 0) values[k] = Number(v);
+      }
+      return { cap, values };
+    }
+
+    function baselineOf(appP) {
+      const cap = Boolean(appP && capStat && Number(appP.stats[capStat[0]]) > 0);
+      const values = {};
+      for (const [k] of numStats) {
+        const v = appP && appP.stats[k];
+        if (v != null && Number(v) !== 0) values[k] = Number(v);
+      }
+      return { cap, values };
+    }
+
+    function sameState(a, b) {
+      if (a.cap !== b.cap) return false;
+      const ka = Object.keys(a.values);
+      if (ka.length !== Object.keys(b.values).length) return false;
+      for (const k of ka) {
+        if (!(k in b.values) || Number(b.values[k]) !== a.values[k]) return false;
+      }
+      return true;
+    }
+
+    function sideDirty() {
+      for (const entry of registry.values()) {
+        if (!entry.locked && !sameState(readRow(entry), entry.baseline)) return true;
+      }
+      return false;
+    }
+
     const zone = editorZone;
     zone.innerHTML = "";
     const card = el(`<div class="card fx-editor">
@@ -231,8 +312,13 @@ export async function render(root, ctx) {
       <div class="fx-side-toggle" role="tablist"></div>
       <div class="fx-roster-wrap"></div>
     </div>`);
-    card.querySelector('[data-act="close"]').addEventListener("click", () => {
+    const closeIt = () => {
       zone.innerHTML = "";
+      dirtyProbe = null;
+    };
+    card.querySelector('[data-act="close"]').addEventListener("click", () => {
+      if (sideDirty()) showConfirm(closeIt);
+      else closeIt();
     });
     zone.appendChild(card);
 
@@ -243,6 +329,7 @@ export async function render(root, ctx) {
     function drawTable() {
       const wrapEl = card.querySelector(".fx-roster-wrap");
       wrapEl.innerHTML = "";
+      registry.clear();
       const players = sidePlayers(activeSide);
       if (!players.length) {
         wrapEl.appendChild(el(`<p class="hint" style="margin:10px">该侧无匹配球员（球员库中无人所属队伍与该队队名一致；此类球员如需录入，请管理员用 /成长上报 按 UID 直录）</p>`));
@@ -344,6 +431,14 @@ export async function render(root, ctx) {
       });
       tdOp.appendChild(btn);
       tr.appendChild(tdOp);
+      registry.set(p.player_uid, {
+        uid: p.player_uid,
+        name: p.name,
+        capInp,
+        inputs,
+        locked,
+        baseline: baselineOf(appP),
+      });
       return tr;
     }
 
@@ -356,11 +451,19 @@ export async function render(root, ctx) {
           <b>${side === "home" ? "主队" : "客队"} ${esc(team)}</b><small>${sidePlayers(side).length} 人</small>
         </button>`);
         chip.addEventListener("click", () => {
-          activeSide = side;
-          redraw();
+          if (side === activeSide) return;
+          const go = () => {
+            activeSide = side;
+            redraw();
+          };
+          if (sideDirty()) showConfirm(go);
+          else go();
         });
         toggle.appendChild(chip);
       }
+      const saveAll = el(`<button type="button" class="btn fx-save-all" title="保存当前队所有有改动的球员">全部保存</button>`);
+      saveAll.addEventListener("click", () => saveAllSide(saveAll));
+      toggle.appendChild(saveAll);
       drawTable();
     }
 
@@ -378,7 +481,59 @@ export async function render(root, ctx) {
       await refreshRounds();
     }
 
+    /** 批量保存当前队所有相对基线有改动的球员行。服务端按（对阵,侧,球员）整组替换：
+        按当前输入全量提交，清空的字段保存后服务端同步清除；全 0 行被服务端拒绝，计入 blank 跳过。 */
+    async function saveAllSide(btn) {
+      const dirtyEntries = [...registry.values()].filter(
+        (entry) => !entry.locked && !sameState(readRow(entry), entry.baseline)
+      );
+      if (!dirtyEntries.length) {
+        toast("当前队没有未保存的改动");
+        return;
+      }
+      btn.disabled = true;
+      let ok = 0;
+      let failed = 0;
+      let blank = 0;
+      const failedNotes = [];
+      for (const entry of dirtyEntries) {
+        const row = readRow(entry);
+        const stats = {};
+        for (const [k, v] of Object.entries(row.values)) stats[k] = String(v);
+        if (capStat && row.cap) stats[capStat[0]] = "1";
+        if (!Object.keys(stats).length) {
+          blank += 1;
+          continue;
+        }
+        try {
+          await api.post("fixtures/appearance", {
+            rev_fixture_key: key,
+            rev_side: activeSide,
+            player_uid: entry.uid,
+            stats,
+          });
+          ok += 1;
+        } catch (e) {
+          failed += 1;
+          failedNotes.push(`${entry.name}：${e.message}`);
+        }
+      }
+      const parts = [];
+      if (ok) parts.push(`${ok} 人已保存`);
+      if (blank) parts.push(`${blank} 人全 0 跳过`);
+      if (failed) parts.push(`${failed} 人失败`);
+      toast(parts.join("；") || "没有需要保存的改动", failed > 0);
+      for (const note of failedNotes) toast(note, true);
+      if (ok > 0) {
+        ctx.refreshBadges();
+        await reopenEditor();
+      } else {
+        btn.disabled = false;
+      }
+    }
+
     redraw();
+    dirtyProbe = sideDirty;
     zone.scrollIntoView({ behavior: "smooth", block: "start" });
   }
 }

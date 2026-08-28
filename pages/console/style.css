@@ -615,6 +615,22 @@ pre.preview {
   margin-bottom: 10px;
 }
 
+.fx-side-toggle .fx-save-all { margin-left: auto; }
+
+/* 未保存改动确认条：钉在录入面板顶部 */
+.fx-confirm {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1px solid var(--sent-off);
+  border-radius: var(--radius);
+  background: var(--card);
+  padding: 8px 12px;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+}
+
 /* 花名册表头冻结：表体整表展开随页面滚动，表头钉在视口顶部。
    border-collapse 下表头下边框不随 sticky 绘制，用阴影补；
    窄屏顶部 sticky 导航会遮挡钉住的表头，故仅桌面（≥900px）启用。 */
