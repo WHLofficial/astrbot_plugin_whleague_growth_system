@@ -597,16 +597,6 @@ pre.preview {
 }
 .round-chip.active small { color: rgba(255, 255, 255, 0.85); }
 
-.bench-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 0;
-  border-bottom: 1px dashed var(--line);
-  font-size: 13.5px;
-}
-.bench-row:last-child { border-bottom: none; }
-
 .fx-headline {
   display: flex;
   align-items: center;
@@ -624,28 +614,6 @@ pre.preview {
   flex-wrap: wrap;
   margin-bottom: 10px;
 }
-
-/* 花名册表：限高纵向滚动 + 表头冻结；列宽自适应输入宽度，杜绝横向拖动 */
-.fx-roster-wrap {
-  max-height: 460px;
-  overflow-y: auto;
-  overflow-x: hidden;
-  border: 1px solid var(--line);
-  border-radius: var(--radius);
-}
-.fx-roster-wrap th {
-  position: sticky;
-  top: 0;
-  z-index: 1;
-  background: var(--card);
-  padding: 6px 8px;
-  box-shadow: 0 1px 0 var(--line);
-}
-.fx-roster-wrap td { padding: 5px 8px; }
-.fx-roster-wrap td small { font-size: 11px; }
-.fx-roster-wrap input[type="number"] { width: 100%; min-width: 0; }
-.fx-roster-wrap input[type="checkbox"] { width: auto; }
-.fx-roster-wrap .btn { padding: 3px 10px; font-size: 12.5px; }
 
 .fx-score {
   font-family: var(--mono);

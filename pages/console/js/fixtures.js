@@ -28,8 +28,6 @@ export async function render(root, ctx) {
   let roundsData = null;
   let currentComp = null;
   let currentRound = null;
-  /* 各场比赛的未匹配球员手动指派（fixture_key → {uid: side}），面板收起/重开后保留 */
-  const manualAssigned = new Map();
 
   await loadRounds();
 
@@ -211,9 +209,6 @@ export async function render(root, ctx) {
     let rosters = detail.rosters || { home: [], away: [], unmatched: [] };
     /* 已录出场：服务端以 player_uid 为键聚合 {stats:{k:v}, period_no, total_xp} */
     let apps = detail.appearances || {};
-    /* 未匹配球员被手动指定的球队视角：{uid: "home"|"away"}，跨保存保留 */
-    const assigned = manualAssigned.get(key) || {};
-    manualAssigned.set(key, assigned);
     let activeSide = "home";
 
     /* 「出场」计数项（键 appearance 或名称含「出场」）用复选框表达：打过=1，没打=0 */
@@ -235,7 +230,6 @@ export async function render(root, ctx) {
       </div>
       <div class="fx-side-toggle" role="tablist"></div>
       <div class="fx-roster-wrap"></div>
-      <div class="fx-bench"></div>
     </div>`);
     card.querySelector('[data-act="close"]').addEventListener("click", () => {
       zone.innerHTML = "";
@@ -243,13 +237,7 @@ export async function render(root, ctx) {
     zone.appendChild(card);
 
     function sidePlayers(side) {
-      const base = rosters[side].map((p) => ({ ...p }));
-      for (const [uid, asSide] of Object.entries(assigned)) {
-        if (asSide !== side) continue;
-        const p = rosters.unmatched.find((x) => x.player_uid === uid);
-        if (p && !base.some((x) => x.player_uid === uid)) base.push({ ...p });
-      }
-      return base;
+      return rosters[side].map((p) => ({ ...p }));
     }
 
     function drawTable() {
@@ -257,7 +245,7 @@ export async function render(root, ctx) {
       wrapEl.innerHTML = "";
       const players = sidePlayers(activeSide);
       if (!players.length) {
-        wrapEl.appendChild(el(`<p class="hint" style="margin:10px">无匹配球员（球员库中无人绑定该队名，可在下方未匹配名单中指定）</p>`));
+        wrapEl.appendChild(el(`<p class="hint" style="margin:10px">该侧无匹配球员（球员库中无人所属队伍与该队队名一致；此类球员如需录入，请管理员用 /成长上报 按 UID 直录）</p>`));
         return;
       }
       const capHead = capStat ? `<th class="num">出场</th>` : "";
@@ -359,32 +347,6 @@ export async function render(root, ctx) {
       return tr;
     }
 
-    function drawBench() {
-      const zoneBench = card.querySelector(".fx-bench");
-      zoneBench.innerHTML = "";
-      const list = rosters.unmatched.filter((p) => !assigned[p.player_uid]);
-      if (!list.length) return;
-      zoneBench.appendChild(el(`<h4 style="margin:14px 0 8px;font-family:var(--serif);font-size:14px">未匹配名单<span class="hint">（球员所属队伍与双方队名都不一致，指定视角后即出现在对应一侧）</span></h4>`));
-      for (const p of list) {
-        const hasApp = Boolean(apps[p.player_uid]);
-        const rowEl = el(`<div class="bench-row">
-          <b></b><small class="hint"></small><span style="flex:1"></span>
-          <button type="button" class="btn secondary" data-side="home">记入主队</button>
-          <button type="button" class="btn secondary" data-side="away">记入客队</button>
-        </div>`);
-        rowEl.querySelector("b").textContent = p.name;
-        rowEl.querySelector("small").textContent =
-          `${p.player_uid}${p.team ? " · 所属: " + p.team : ""}${hasApp ? " · 已有记录" : ""}`;
-        for (const b of rowEl.querySelectorAll("button[data-side]")) {
-          b.addEventListener("click", () => {
-            assigned[p.player_uid] = b.dataset.side;
-            redraw();
-          });
-        }
-        zoneBench.appendChild(rowEl);
-      }
-    }
-
     function redraw() {
       const toggle = card.querySelector(".fx-side-toggle");
       toggle.innerHTML = "";
@@ -400,10 +362,9 @@ export async function render(root, ctx) {
         toggle.appendChild(chip);
       }
       drawTable();
-      drawBench();
     }
 
-    /** 保存成功后重拉详情并原地重绘（手动指派保留）。 */
+    /** 保存成功后重拉详情并原地重绘。 */
     async function reopenEditor() {
       try {
         detail = await api.get(`fixtures/detail/${encodeURIComponent(key)}`);
