@@ -3,7 +3,11 @@
 import * as api from "./api.js";
 import { el, esc, renderTable, toast, errorNote } from "./ui.js";
 
-const BOOL_KEYS = new Set(["advance_default_carryover", "import_require_confirm"]);
+const BOOL_KEYS = new Set([
+  "advance_default_carryover",
+  "import_require_confirm",
+  "notify_on_league_advance",
+]);
 
 export async function render(root, ctx) {
   root.appendChild(el(`<div>

@@ -21,6 +21,8 @@
 
 - WebUI 赛程页签：轮次对阵列表错误解包 `fixtures` 响应（data 为 `{available, fixtures}` 对象却按数组取 `length`），导致每轮恒显「该轮暂无对阵」。
 - WebUI 赛程页签：「录数据 / 查看 / 编辑」按钮无反应——`openDrawer` 未导入，点击时抛 ReferenceError。
+- WebUI 赛程抽屉：`drawBody` 在 `rosters/apps/assigned` 声明前调用（TDZ ReferenceError），抽屉只渲染到「比赛日期」；且已录数据按行数组解析、与服务端按 player_uid 聚合的对象 shape 不符——统一改为直接采用服务端 shape，保存后原地重绘同步刷新花名册。
+- WebUI 全量审查修复：`renderTable` 不向渲染函数传行号导致成长期结算表「#」列显示 NaN；比赛页球员下拉只加载第 1 页（10 人）改为翻页拉全量（上限 50 页）；配置页布尔项集合补 `notify_on_league_advance`（渲染为复选框）；清理球员页无效语句。
 - WebUI 暗色主题：`html[data-theme="dark"] .btn` 的深色文字规则压过 `.btn.secondary` / `.btn.danger` 变体色，透明底按钮（成长期页签的「结算表」「推进成长期」等）在夜间变成深字叠深卡几乎不可见；改为 `--btn-primary-fg` token，变体色恢复。
 - 赛程未按赛事分开：主场库轮次号按（赛季, 赛事）各自分配，联赛与杯赛的同号轮不是同一轮；桥接查询与聊天侧 `/成长 赛程` 均改为按（赛事, 轮次）聚合展示，并只显示当前赛季窗口（历史窗口不再混入）；文字轮次（如「顶级9」）改经 `round_names` 表解析为（赛事, 轮次号）。
 

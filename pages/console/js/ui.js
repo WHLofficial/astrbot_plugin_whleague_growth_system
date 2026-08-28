@@ -35,9 +35,9 @@ export function renderTable(columns, rows, emptyHint = "暂无记录") {
     .join("");
   const tbody = rows
     .map(
-      (row) =>
+      (row, i) =>
         `<tr>${columns
-          .map((c) => `<td class="${c.num ? "num" : ""}">${c.render(row)}</td>`)
+          .map((c) => `<td class="${c.num ? "num" : ""}">${c.render(row, i)}</td>`)
           .join("")}</tr>`
     )
     .join("");

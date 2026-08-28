@@ -22,11 +22,21 @@ export async function render(root, ctx) {
   let reloadRecent = null;
 
   try {
-    const [rule, playersPage] = await Promise.all([
+    /* 下拉需要全量球员：首页与规则并行取，其余页顺序补齐（防御性上限 50 页） */
+    const [rule, firstPage] = await Promise.all([
       api.get("rule"),
       api.get("players", { page: 1 }),
     ]);
-    drawForm(rule, playersPage.rows || []);
+    const players = [...(firstPage.rows || [])];
+    for (
+      let p = 2;
+      p <= Math.min(Number(firstPage.total_pages) || 1, 50) && players.length < 2000;
+      p += 1
+    ) {
+      const pageData = await api.get("players", { page: p });
+      players.push(...(pageData.rows || []));
+    }
+    drawForm(rule, players);
   } catch (e) {
     formZone.innerHTML = "";
     formZone.appendChild(errorNote(e.message));

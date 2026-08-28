@@ -178,7 +178,6 @@ export async function render(root, ctx) {
   head.querySelector("#pl-sort").addEventListener("change", (ev) => {
     sort = ev.target.value;
     page = 1;
-    if (sort !== "uid") { mode = mode; }
     load();
   });
 

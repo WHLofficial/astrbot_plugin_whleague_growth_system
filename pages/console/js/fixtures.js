@@ -208,25 +208,15 @@ export async function render(root, ctx) {
       return;
     }
     const fx = detail.fixture;
-    const d = openDrawer(`第 ${fx.round_no} 轮 · ${fx.home_team} vs ${fx.away_team}`);
-    drawBody(d.body);
-
     /* 服务端花名册：home/away 为按队名自动匹配的球员库玩家 */
-    const rosters = detail.rosters || { home: [], away: [], unmatched: [] };
-    /* 已录出场按 player_uid 聚合：{stats:{k:v}, period_no, total_xp} */
-    const apps = {};
-    for (const row of detail.appearances) {
-      const p = (apps[row.player_uid] ||= {
-        stats: {},
-        period_no: row.period_no,
-        total_xp: Number(row.total_xp) || 0,
-      });
-      if (row.stat_key !== null && row.stat_key !== undefined) {
-        p.stats[row.stat_key] = Number(row.value) || 0;
-      }
-    }
+    let rosters = detail.rosters || { home: [], away: [], unmatched: [] };
+    /* 已录出场：服务端以 player_uid 为键聚合 {stats:{k:v}, period_no, total_xp} */
+    let apps = detail.appearances || {};
     /* 未匹配球员被手动指定的球队视角：{uid: "home"|"away"} */
     const assigned = {};
+
+    const d = openDrawer(`第 ${fx.round_no} 轮 · ${fx.home_team} vs ${fx.away_team}`);
+    drawBody(d.body);
 
     function dateField() {
       const wrap = el(`<label class="field fx-date"><span>比赛日期（首次保存生效）</span><input type="date"></label>`);
@@ -400,17 +390,8 @@ export async function render(root, ctx) {
           return;
         }
         // 重算聚合（assigned 保留用户手动指定）
-        for (const k of Object.keys(apps)) delete apps[k];
-        for (const row of detail.appearances) {
-          const p = (apps[row.player_uid] ||= {
-            stats: {},
-            period_no: row.period_no,
-            total_xp: Number(row.total_xp) || 0,
-          });
-          if (row.stat_key !== null && row.stat_key !== undefined) {
-            p.stats[row.stat_key] = Number(row.value) || 0;
-          }
-        }
+        rosters = detail.rosters || { home: [], away: [], unmatched: [] };
+        apps = detail.appearances || {};
         drawBody(d.body);
         await refreshRounds();
       }
