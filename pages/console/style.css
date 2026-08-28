@@ -615,6 +615,19 @@ pre.preview {
   margin-bottom: 10px;
 }
 
+/* 花名册表头冻结：表体整表展开随页面滚动，表头钉在视口顶部。
+   border-collapse 下表头下边框不随 sticky 绘制，用阴影补；
+   窄屏顶部 sticky 导航会遮挡钉住的表头，故仅桌面（≥900px）启用。 */
+@media (min-width: 900px) {
+  .fx-roster-wrap th {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    background: var(--card);
+    box-shadow: 0 1px 0 var(--line);
+  }
+}
+
 .fx-score {
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
