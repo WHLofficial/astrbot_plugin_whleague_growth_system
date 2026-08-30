@@ -2161,6 +2161,45 @@ class _CmdEvent:
         return self
 
 
+def test_auto_export_sends_group_and_returns_none(monkeypatch):
+    """回归：_auto_export 曾因 MessageChain 未导入（NameError 被吞）发群静默降级。"""
+    from astrbot_plugin_whleague_growth_system.handlers import admin as admin_mod
+
+    sent = []
+
+    class _MC:
+        def __init__(self, chain=None):
+            self.chain = chain
+
+        def message(self, text):
+            sent.append(text)
+            return self
+
+    # 修复前 admin 模块无 MessageChain 属性，setattr 即红；File 桩换成可带参构造
+    monkeypatch.setattr(admin_mod, "MessageChain", _MC)
+    monkeypatch.setattr(admin_mod, "File", lambda name, file: ("file", name, file))
+
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            await _setup(service, dao)
+            await service.record_match("p01", "2026-08-01", "强队", {"goal": 2}, "admin")
+            await service.advance_period("成长期2", True)
+
+            class _Ev(_CmdEvent):
+                async def send(self, msg):
+                    sent.append(msg)
+                    return self
+
+            ev = _Ev()
+            note = await plugin.admin_handler._auto_export(ev, 1)
+            assert note is None      # 修复前 NameError 被吞，走降级分支返回提示串
+            assert len(sent) >= 1    # 至少一次发群（文件链）
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())
+
+
 def _make_plugin_env(admin_ids=None):
     """构造接线完毕的插件实例（真实服务 + 临时库），返回 (plugin, service, dao, imp, tmp, env)。"""
     from astrbot_plugin_whleague_growth_system.handlers.admin import AdminHandler

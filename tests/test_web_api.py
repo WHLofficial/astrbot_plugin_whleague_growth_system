@@ -228,6 +228,13 @@ def test_record_match_requires_date(api):
         call(api.record_match())
 
 
+def test_record_match_rejects_bad_date(api):
+    set_request(body={"player_uid": "p01", "match_date": "2026-13-99", "stats": {"goal": 1}}, username="t")
+    with pytest.raises(ValueError) as e:
+        call(api.record_match())
+    assert "非法日期" in str(e.value)
+
+
 def test_record_match_requires_stats(api):
     set_request(body={"player_uid": "p01", "match_date": "2026-09-01"}, username="t")
     with pytest.raises(ValueError) as e:
@@ -587,6 +594,7 @@ def test_save_appearance_validation(rev_api):
         {"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01", "stats": {}},
         {"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01", "stats": {"goal": "0"}},
         {"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01", "stats": {"goal": "abc"}},
+        {"rev_fixture_key": "1", "rev_side": "home", "player_uid": "p01", "match_date": "abc", "stats": {"goal": "1"}},
     ]
     for case in cases:
         set_request(body=case, username="t")

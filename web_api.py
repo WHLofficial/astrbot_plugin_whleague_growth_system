@@ -15,7 +15,7 @@ from astrbot.api.web import error_response, file_response, json_response, reques
 
 from .config.defaults import validate_and_cast
 from .handlers.admin import _CONFIG_GROUPS, _KIND_NAME, _as_bool, _format_config_value
-from .utils.security import normalize_name, parse_num, sanitize_filename, sanitize_text
+from .utils.security import normalize_name, parse_date, parse_num, sanitize_filename, sanitize_text
 
 PLUGIN_NAME = "astrbot_plugin_whleague_growth_system"
 
@@ -217,6 +217,7 @@ class WebApi:
         match_date = str(body.get("match_date", "")).strip()
         if not match_date:
             raise ValueError("缺少比赛日期")
+        match_date = parse_date(match_date)
         opponent = sanitize_text(str(body.get("opponent", "")).strip())
         raw_stats = body.get("stats")
         if not isinstance(raw_stats, dict) or not raw_stats:
@@ -391,6 +392,8 @@ class WebApi:
         match_date = str(body.get("match_date", "")).strip()
         if not match_date:
             match_date = date.today().strftime("%Y-%m-%d")
+        else:
+            match_date = parse_date(match_date)
         opponent = fx["away_team"] if side == "home" else fx["home_team"]
         created_by = f"webui:{request.username}" if request.username else "webui"
         result = await self._plugin.growth_service.record_match(

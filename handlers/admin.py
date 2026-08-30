@@ -7,7 +7,7 @@
 from collections.abc import AsyncGenerator
 
 from astrbot.api import logger
-from astrbot.api.event import AstrMessageEvent, MessageEventResult
+from astrbot.api.event import AstrMessageEvent, MessageChain, MessageEventResult
 from astrbot.api.message_components import File
 
 from ..config.defaults import DEFAULT_CONFIG, validate_and_cast
