@@ -2602,3 +2602,34 @@ def test_dispatch_import_confirm_via_keyword():
         _run_async(_run())
     finally:
         asyncio.run(env["db"].close())
+
+
+def test_import_confirm_refuses_reprocessed_file():
+    """对齐 WebUI 语义：已导入/已驳回的登记不能经聊天侧重复确认。"""
+    plugin, service, dao, imp, tmp, env = _make_plugin_env()
+    try:
+        async def _run():
+            ah = plugin.admin_handler
+            rule = {"stats": {"goal": {"name": "进球", "xp": 10}}, "level_xp": 100}
+            (imp.imports_dir / "规则_t1.json").write_text(
+                json.dumps(rule, ensure_ascii=False), encoding="utf-8"
+            )
+            # 预览 → 登记（status=pending）
+            ev1 = _CmdEvent("成长 导入 规则_t1.json", admin=True)
+            async for _ in ah.import_files(ev1, ["规则_t1.json"]):
+                pass
+            assert any("回复 /成长 导入 确认 规则_t1.json" in t for t in ev1.results)
+            # 首次确认 → 成功，登记转 done
+            ev2 = _CmdEvent("成长 导入 确认 规则_t1.json", admin=True)
+            async for _ in ah.import_files(ev2, ["确认", "规则_t1.json"]):
+                pass
+            assert any("规则已更新" in t for t in ev2.results)
+            # 再次确认 → 拒绝
+            ev3 = _CmdEvent("成长 导入 确认 规则_t1.json", admin=True)
+            async for _ in ah.import_files(ev3, ["确认", "规则_t1.json"]):
+                pass
+            assert any("已处理过" in t for t in ev3.results)
+            assert not any("规则已更新" in t for t in ev3.results)
+        _run_async(_run())
+    finally:
+        asyncio.run(env["db"].close())

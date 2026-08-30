@@ -17,6 +17,7 @@ const TABS = [
 const contentEl = document.getElementById("content");
 const navEl = document.getElementById("sidenav");
 let currentId = null;
+let renderSeq = 0;
 let activeUnload = null;
 
 /* ─── 主题 ─────────────────────────────────────── */
@@ -74,6 +75,7 @@ async function render() {
   const id = currentRoute();
   if (id === currentId) return;
   currentId = id;
+  const seq = ++renderSeq;
 
   if (typeof activeUnload === "function") {
     try { activeUnload(); } catch { /* 忽略卸载错误 */ }
@@ -88,11 +90,13 @@ async function render() {
     contentEl.innerHTML = "";
     try {
       const mod = await t.loader();
+      if (seq !== renderSeq) return; // 加载期间已切往其他页签：丢弃本次结果
       activeUnload = await mod.render(contentEl, {
         refreshBadges,
         go: (tabId) => { location.hash = `#/${tabId}`; },
       }) || null;
     } catch (e) {
+      if (seq !== renderSeq) return; // 过期加载的失败不打扰新页签
       contentEl.innerHTML = "";
       const errEl = document.createElement("div");
       errEl.className = "boot-error";

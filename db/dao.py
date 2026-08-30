@@ -97,7 +97,8 @@ class GrowthDAO:
         )
 
     async def get_snapshots_carryover(self, period_no: int) -> dict:
-        """该成长期开始时每位球员的账面经验（= 上一期快照的溢出结转）。"""
+        """返回 period_no 期快照记录的溢出结转（即 period_no+1 期的期初账面经验；
+        取 period_no 期期初请传 period_no-1，唯一调用方 export_service._start_xp_map 即此用法）。"""
         rows = await self._db.fetchall(
             "SELECT player_uid, xp_carryover FROM period_snapshots WHERE period_no=?",
             (period_no,),
@@ -543,6 +544,13 @@ class GrowthDAO:
         return await self._db.fetchone(
             "SELECT * FROM pending_imports WHERE file_name=? AND status='pending' "
             "ORDER BY id DESC LIMIT 1",
+            (file_name,),
+        )
+
+    async def get_latest_import_by_filename(self, file_name: str):
+        """按文件名取最新登记（不过滤状态，供确认前检查是否已处理）。"""
+        return await self._db.fetchone(
+            "SELECT * FROM pending_imports WHERE file_name=? ORDER BY id DESC LIMIT 1",
             (file_name,),
         )
 

@@ -460,6 +460,19 @@ class WebApi:
     async def upload_file(self, kind: str):
         if kind not in _KIND_NAME:
             raise ValueError(f"未知导入类型: {kind}（支持 rule / players / matches）")
+        size_mb = int(self._plugin.config_cache.get("import_max_file_size_mb", 50) or 50)
+        # 预接收大小检查：必须发生在 request.files() 消费请求体之前——
+        # Starlette 会先把整个 body 缓冲进临时文件（>1MB 落盘），此后才发现超限
+        # 已无法阻止磁盘被占用；ASGI 懒消费下此处直接拒绝即可背压断传，磁盘零暴露。
+        raw_len = request.headers.get("content-length")
+        try:
+            total = int(raw_len) if raw_len else None
+        except (TypeError, ValueError):
+            total = None
+        if total is None:
+            raise ValueError("无法确认请求大小（缺少 Content-Length），请用常规方式重新上传")
+        if total > size_mb * 1024 * 1024 + 64 * 1024:
+            raise ValueError(f"文件超过大小上限（{size_mb} MB）")
         files = await request.files()
         upload = files.get("file")
         if upload is None or not upload.filename:
@@ -470,9 +483,6 @@ class WebApi:
             raise ValueError("仅支持 .json / .xlsx / .csv 文件")
         service = self._plugin.import_service
         target = service.imports_dir / safe_name
-        size_mb = self._plugin.config_cache.get("import_max_file_size_mb", 50)
-        if upload.content_length is not None and upload.content_length > int(size_mb) * 1024 * 1024:
-            raise ValueError(f"文件超过大小上限（{size_mb} MB）")
         await upload.save(target)
         preview = await service.preview(target, kind)
         pending_id = await self._plugin.dao.insert_pending(kind, safe_name, preview, "webui")

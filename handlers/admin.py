@@ -125,7 +125,7 @@ class AdminHandler:
         opponent = ""
         for token in args[2:]:
             if "=" not in token:
-                yield event.plain_result(f"参数需为 数据项=值 或 对手=xxx: {token}")
+                yield event.plain_result(f"{WARN}参数需为 数据项=值 或 对手=xxx: {token}")
                 return
             k, v = token.split("=", 1)
             k = k.strip()
@@ -159,24 +159,24 @@ class AdminHandler:
         ]
         if result["awarded"]:
             rule = await self.growth.get_rule() or {}
-            stats = rule.get("stats", {})
+            stat_defs = rule.get("stats", {})
             period_label = {"period": "成长期内", "career": "生涯", "match": "单场"}
             for m in result["awarded"]:
                 if m["period"] == "match":
-                    name = stats.get(m["stat"], {}).get("name", m["stat"])
+                    name = stat_defs.get(m["stat"], {}).get("name", m["stat"])
                     lines.append(
                         f"🎉 单场达标: {name} {fmt_xp(m['value'])}≥{fmt_xp(m['threshold'])}"
                         f" → +{fmt_xp(m['xp'])} 经验"
                     )
                 elif "step" in m:
-                    name = stats.get(m["stat"], {}).get("name", m["stat"])
+                    name = stat_defs.get(m["stat"], {}).get("name", m["stat"])
                     lines.append(
                         f"🎉 重复奖励达成: {name} {period_label[m['period']]}"
                         f"每累计 {fmt_xp(m['step'])} 次 ×{m['count']} → +{fmt_xp(m['gain'])} 经验"
                     )
                 else:
                     keys = m.get("stat_keys") or [m["stat"]]
-                    name = "+".join(stats.get(k, {}).get("name", k) for k in keys)
+                    name = "+".join(stat_defs.get(k, {}).get("name", k) for k in keys)
                     lines.append(
                         f"🎉 达成里程碑: {name} {period_label[m['period']]}"
                         f"累计 {fmt_xp(m['threshold'])} → +{fmt_xp(m['xp'])} 经验"
@@ -328,10 +328,15 @@ class AdminHandler:
             logger.error(f"Import preview error: {e}")
             yield event.plain_result(f"{WARN}预览失败: {e}")
             return
-        await self.dao.insert_pending(kind, file_name, preview, event.get_sender_id())
+        note = ""
+        try:
+            await self.dao.insert_pending(kind, file_name, preview, event.get_sender_id())
+        except Exception as e:
+            logger.error(f"Insert pending error: {e}")
+            note = f"\n{WARN}登记写入失败（{e}），该文件不会出现在待确认列表，可直接用上面的确认命令执行"
         yield event.plain_result(
             f"📄 {file_name}（{_KIND_NAME[kind]}）\n{preview}\n"
-            f"回复 /成长 导入 确认 {file_name} 执行导入"
+            f"回复 /成长 导入 确认 {file_name} 执行导入{note}"
         )
 
     async def _import_confirm(self, event: AstrMessageEvent, args: list[str]) -> AsyncGenerator[MessageEventResult, None]:
@@ -347,9 +352,19 @@ class AdminHandler:
             return
         file_name = args[0].strip()
         kind = self._resolve_kind(args[1].strip() if len(args) >= 2 else None, file_name)
-        pending = await self.dao.get_pending_by_filename(file_name)
+        # 用不过滤状态的查询：文件已导入/驳回时守卫能看见，拒绝重复确认；
+        # get_pending_by_filename 只返回 pending 行，转 done 后查不到、守卫会失效。
+        pending = await self.dao.get_latest_import_by_filename(file_name)
         if pending is not None:
             kind = kind or pending["kind"]
+        # 与 WebUI 确认端点对齐：已导入/已驳回的登记不能重复确认，
+        # 防止旧文件被二次执行；未登记的文件名仍允许直接确认（聊天侧通道）。
+        if pending is not None and pending["status"] != "pending":
+            yield event.plain_result(
+                f"{WARN}该文件已处理过（状态：{'已导入' if pending['status'] == 'done' else '已驳回'}），"
+                "不能重复确认；请重新预览生成新登记"
+            )
+            return
         if kind is None:
             yield event.plain_result("无法确定导入类型，请指定 [类型]（规则/球员/比赛）")
             return

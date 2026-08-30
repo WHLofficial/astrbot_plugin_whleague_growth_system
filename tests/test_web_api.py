@@ -108,7 +108,7 @@ class _Files:
         return self._mapping.get(key)
 
 
-def set_request(query=None, body=None, username="tester", files=None):
+def set_request(query=None, body=None, username="tester", files=None, headers=None):
     """配置 astrbot.api.web 桩上共享的 request 替身状态。"""
     from astrbot.api import web as web_stub
     from types import SimpleNamespace
@@ -116,6 +116,7 @@ def set_request(query=None, body=None, username="tester", files=None):
     req = web_stub.request
     req.query = _Query(query) if query is not None else SimpleNamespace(get=lambda k, d=None, t=None: d)
     req.username = username
+    req.headers = headers if headers is not None else {}
 
     async def _json(default=None):
         if body is not None:
@@ -355,7 +356,7 @@ def test_upload_unknown_kind(api):
 
 
 def test_upload_missing_file_field(api):
-    set_request(files={}, username="t")
+    set_request(files={}, username="t", headers={"content-length": "4096"})
     with pytest.raises(ValueError) as e:
         call(api.upload_file("rule"))
     assert "file" in str(e.value)
@@ -363,7 +364,8 @@ def test_upload_missing_file_field(api):
 
 def test_upload_bad_extension_cleaned_via_path_logic(api):
     # 扩展名白名单在前置分支（upload_file 内）触发
-    set_request(files={"file": _FakeUpload("恶意.exe")}, username="t")
+    set_request(files={"file": _FakeUpload("恶意.exe")}, username="t",
+                headers={"content-length": "4096"})
     with pytest.raises(ValueError) as e:
         call(api.upload_file("rule"))
     assert ".json" in str(e.value)
@@ -380,7 +382,7 @@ def test_upload_sanitizes_filename_and_creates_pending(api):
             with open(dest, "wb") as fh:
                 fh.write(content)
 
-    set_request(files={"file": _Upload()}, username="t")
+    set_request(files={"file": _Upload()}, username="t", headers={"content-length": "4096"})
     res = call(api.upload_file("rule"))
     d = res["data"]
     assert d["pending_id"] > 0
@@ -388,6 +390,31 @@ def test_upload_sanitizes_filename_and_creates_pending(api):
     saved = api._plugin.import_service.imports_dir / d["file_name"]
     assert saved.is_file() and saved.parent.resolve() == api._plugin.import_service.imports_dir.resolve()
     assert "成长规则" in d["preview"] or d["preview"]  # 预览非空
+
+
+def test_upload_rejects_oversize_before_consuming_body(api):
+    # 超限必须在 request.files() 消费请求体之前拒绝（Starlette 会先把 body 缓冲落盘）
+    size_mb = int(api._plugin.config_cache.get("import_max_file_size_mb", 50))
+
+    class _Spy:
+        filename = "a.json"
+
+        async def save(self, dest):
+            raise AssertionError("超限请求不应到达落盘")
+
+    set_request(files={"file": _Spy()}, username="t",
+                headers={"content-length": str(size_mb * 1024 * 1024 + 1024 * 1024)})
+    with pytest.raises(ValueError) as e:
+        call(api.upload_file("rule"))
+    assert "大小上限" in str(e.value)
+
+
+def test_upload_rejects_missing_content_length(api):
+    # 拿不到请求大小时宁可拒绝（否则无法预判磁盘占用），不静默放行
+    set_request(files={}, username="t", headers={})
+    with pytest.raises(ValueError) as e:
+        call(api.upload_file("rule"))
+    assert "Content-Length" in str(e.value)
 
 
 # ─── 导出下载 ─────────────────────────────────────────────
